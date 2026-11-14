@@ -33,6 +33,7 @@ class ToolCallRequest:
 
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    thought_signature: bytes | None = None
 
 
 @dataclass
@@ -141,7 +142,19 @@ class GeminiClient:
         resp = self._client.models.generate_content(model=self.model, contents=contents, config=config)
 
         tool_calls: list[ToolCallRequest] = []
-        if resp.function_calls:
+        candidates = getattr(resp, "candidates", None) or []
+        if candidates and getattr(candidates[0], "content", None):
+            for part in getattr(candidates[0].content, "parts", None) or []:
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    tool_calls.append(
+                        ToolCallRequest(
+                            name=fc.name,
+                            arguments=dict(fc.args or {}),
+                            thought_signature=getattr(part, "thought_signature", None),
+                        )
+                    )
+        elif resp.function_calls:
             for fc in resp.function_calls:
                 tool_calls.append(ToolCallRequest(name=fc.name, arguments=dict(fc.args or {})))
 
@@ -176,10 +189,11 @@ class GeminiClient:
                 continue
 
             if role == "assistant" and msg.get("tool_calls"):
-                parts = [
-                    types.Part.from_function_call(name=tc["name"], args=tc.get("arguments", {}))
-                    for tc in msg["tool_calls"]
-                ]
+                parts = []
+                for tc in msg["tool_calls"]:
+                    sig = tc.get("thought_signature")
+                    fc = types.FunctionCall(name=tc["name"], args=tc.get("arguments", {}))
+                    parts.append(types.Part(function_call=fc, thought_signature=sig) if sig else types.Part(function_call=fc))
                 contents.append(types.Content(role="model", parts=parts))
             else:
                 contents.append(
@@ -264,7 +278,14 @@ class TriageHarness:
             messages.append(
                 {
                     "role": "assistant",
-                    "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in response.tool_calls],
+                    "tool_calls": [
+                        {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                            "thought_signature": tc.thought_signature,
+                        }
+                        for tc in response.tool_calls
+                    ],
                 }
             )
 
