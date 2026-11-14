@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,94 +30,130 @@ TOOL_PERMISSIONS: dict[str, str] = {
 }
 
 
-def _get_langfuse_client() -> Any:
-    """Create a Langfuse client from environment variables, or return None if unconfigured."""
+def _get_langfuse_auth() -> tuple[str, str, str] | None:
+    """Return (public_key, secret_key, host) from env, or None if unconfigured."""
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
     secret_key = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
-    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
+    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip().rstrip("/")
     if not public_key or not secret_key:
         return None
-    from langfuse import Langfuse
+    return public_key, secret_key, host
 
-    return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+
+def _fetch_observations(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Query Langfuse v2 observations API with explicit timeout."""
+    auth_info = _get_langfuse_auth()
+    if auth_info is None:
+        raise ValueError("LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY is not configured.")
+    public_key, secret_key, host = auth_info
+    resp = httpx.get(
+        f"{host}/api/public/v2/observations",
+        params=params,
+        auth=(public_key, secret_key),
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    return list(payload.get("data", []))
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-def fetch_failed_traces(limit: int = 10, min_score: float | None = None) -> list[dict[str, Any]]:
-    """Fetch recent failed or low-scoring Langfuse traces for PickForMe."""
-    client = _get_langfuse_client()
-    if client is None:
+def fetch_failed_traces(limit: int = 10, days: int = 7) -> list[dict[str, Any]]:
+    """Fetch recent failed or error Langfuse traces for PickForMe via v2 observations API."""
+    if _get_langfuse_auth() is None:
         return [{"error": "LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY is not configured."}]
 
+    now = datetime.now(timezone.utc)
+    from_iso = (now - timedelta(days=max(1, days))).isoformat().replace("+00:00", "Z")
+    to_iso = now.isoformat().replace("+00:00", "Z")
+
     try:
-        response = client.api.trace.list(limit=max(1, min(limit, 50)))
-        traces = getattr(response, "data", response) or []
-    except Exception as exc:
-        return [{"error": f"Failed to fetch Langfuse traces: {exc}"}]
-
-    results: list[dict[str, Any]] = []
-    for trace in traces:
-        trace_id = getattr(trace, "id", None) or (trace.get("id") if isinstance(trace, dict) else None)
-        name = getattr(trace, "name", None) or (trace.get("name") if isinstance(trace, dict) else None)
-        level = getattr(trace, "level", None) or (trace.get("level") if isinstance(trace, dict) else None)
-        status_msg = getattr(trace, "status_message", None) or (
-            trace.get("status_message") if isinstance(trace, dict) else None
+        observations = _fetch_observations(
+            {
+                "fields": "core,basic",
+                "fromStartTime": from_iso,
+                "toStartTime": to_iso,
+                "limit": max(1, min(limit * 5, 100)),
+            }
         )
-        scores = getattr(trace, "scores", None) or (trace.get("scores") if isinstance(trace, dict) else []) or []
+    except Exception as exc:
+        return [{"error": f"Failed to fetch Langfuse observations: {exc}"}]
 
-        numeric_scores = [
-            float(getattr(s, "value", s.get("value") if isinstance(s, dict) else 0.0))
-            for s in scores
-            if (getattr(s, "value", None) is not None or (isinstance(s, dict) and s.get("value") is not None))
-        ]
-        lowest_score = min(numeric_scores) if numeric_scores else None
-        is_error = str(level).upper() == "ERROR" or bool(status_msg)
-        is_low_score = min_score is not None and lowest_score is not None and lowest_score <= min_score
+    grouped: dict[str, dict[str, Any]] = {}
+    for obs in observations:
+        trace_id = obs.get("traceId")
+        if not trace_id:
+            continue
+        level = str(obs.get("level") or "DEFAULT").upper()
+        status_msg = obs.get("statusMessage") or ""
+        is_error = level == "ERROR" or bool(status_msg)
 
-        if is_error or is_low_score or min_score is None:
-            results.append(
-                {
-                    "trace_id": trace_id,
-                    "name": name,
-                    "level": level,
-                    "status_message": status_msg,
-                    "lowest_score": lowest_score,
-                }
-            )
-    return results
+        entry = grouped.setdefault(
+            trace_id,
+            {
+                "trace_id": trace_id,
+                "name": obs.get("name"),
+                "level": level,
+                "status_message": status_msg,
+                "start_time": obs.get("startTime"),
+                "observation_count": 0,
+                "has_error": False,
+            },
+        )
+        entry["observation_count"] += 1
+        if is_error:
+            entry["has_error"] = True
+            entry["level"] = "ERROR"
+            if status_msg:
+                entry["status_message"] = status_msg
+
+    traces = list(grouped.values())
+    error_traces = [t for t in traces if t["has_error"]]
+    selected = error_traces if error_traces else traces
+    return selected[: max(1, min(limit, 50))]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-def get_trace_spans(trace_id: str) -> dict[str, Any]:
+def get_trace_spans(trace_id: str, days: int = 7) -> dict[str, Any]:
     """Fetch detailed spans/observations for a specific Langfuse trace_id."""
-    client = _get_langfuse_client()
-    if client is None:
+    if _get_langfuse_auth() is None:
         return {"error": "LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY is not configured."}
 
+    now = datetime.now(timezone.utc)
+    from_iso = (now - timedelta(days=max(1, days))).isoformat().replace("+00:00", "Z")
+    to_iso = now.isoformat().replace("+00:00", "Z")
+
     try:
-        trace = client.api.trace.get(trace_id)
-        observations = getattr(trace, "observations", None) or []
-        spans = []
-        for obs in observations:
-            spans.append(
-                {
-                    "id": getattr(obs, "id", None),
-                    "name": getattr(obs, "name", None),
-                    "type": getattr(obs, "type", None),
-                    "level": getattr(obs, "level", None),
-                    "status_message": getattr(obs, "status_message", None),
-                    "start_time": str(getattr(obs, "start_time", "")),
-                    "end_time": str(getattr(obs, "end_time", "")),
-                }
-            )
-        return {
-            "trace_id": trace_id,
-            "name": getattr(trace, "name", None),
-            "span_count": len(spans),
-            "spans": spans,
-        }
+        observations = _fetch_observations(
+            {
+                "fields": "core,basic,io",
+                "traceId": trace_id,
+                "fromStartTime": from_iso,
+                "toStartTime": to_iso,
+                "limit": 50,
+            }
+        )
     except Exception as exc:
         return {"trace_id": trace_id, "error": f"Failed to fetch trace spans: {exc}"}
+
+    spans = [
+        {
+            "id": obs.get("id"),
+            "name": obs.get("name"),
+            "type": obs.get("type"),
+            "level": obs.get("level"),
+            "status_message": obs.get("statusMessage"),
+            "latency_ms": obs.get("latency"),
+            "start_time": obs.get("startTime"),
+            "end_time": obs.get("endTime"),
+        }
+        for obs in observations
+    ]
+    return {
+        "trace_id": trace_id,
+        "span_count": len(spans),
+        "spans": spans,
+    }
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -159,7 +195,7 @@ def check_llm_providers() -> dict[str, Any]:
         ollama_error = str(exc)
 
     return {
-        "gemini": {"configured": gemini_configured, "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash")},
+        "gemini": {"configured": gemini_configured, "model": os.getenv("GEMINI_MODEL", "gemini-3.8-flash")},
         "groq": {"configured": groq_configured},
         "ollama": {"base_url": ollama_url, "reachable": ollama_reachable, "error": ollama_error},
     }

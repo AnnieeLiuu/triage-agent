@@ -103,14 +103,15 @@ class TriageResult:
 class GeminiClient:
     """Google GenAI adapter implementing LLMClient."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, model: str | None = None, timeout_ms: int = 30000) -> None:
         from google import genai
+        from google.genai import types
 
         resolved_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
         if not resolved_key:
             raise ValueError("GEMINI_API_KEY is required to run GeminiClient.")
-        self._client = genai.Client(api_key=resolved_key)
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self._client = genai.Client(api_key=resolved_key, http_options=types.HttpOptions(timeout=timeout_ms))
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     def generate(
         self,
