@@ -158,5 +158,37 @@ def test_long_reply_is_chunked_and_errors_are_reported(monkeypatch):
     assert any(m == "editMessageText" and "boom-504" in p["text"] for m, p in api_calls)
 
 
+def test_markdown_to_telegram_html_and_fallback(monkeypatch):
+    sample = (
+        "### 🔍 故障排查總結\n"
+        "*   **執行 ID**: `27e43736` (`price_lunch` < 1000 & ok)\n"
+        "---\n"
+        "**是否需要存入?**"
+    )
+    rendered = telegram_server._markdown_to_telegram_html(sample)
+    assert "<b>🔍 故障排查總結</b>" in rendered
+    assert "• <b>執行 ID</b>: <code>27e43736</code> (<code>price_lunch</code> &lt; 1000 &amp; ok)" in rendered
+    assert "──────────" in rendered
+    assert "<b>是否需要存入?</b>" in rendered
+    assert "<i>" not in rendered  # snake_case underscores must not trigger italics
+
+    # Verify fallback to plain text when HTML sendMessage is rejected (returns None)
+    calls: list[dict[str, Any]] = []
+
+    def _reject_html(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        calls.append(payload)
+        if payload.get("parse_mode") == "HTML":
+            return None
+        return {"result": {"message_id": 88}}
+
+    monkeypatch.setattr(telegram_server, "_telegram_api", _reject_html)
+    msg_id = telegram_server._send_telegram_message(999, "**fallback test**")
+    assert msg_id == 88
+    assert len(calls) == 2
+    assert calls[0]["parse_mode"] == "HTML"
+    assert "parse_mode" not in calls[1]
+    assert calls[1]["text"] == "**fallback test**"
+
+
 # Keep os imported for env-based MCP tests if needed
 _ = os

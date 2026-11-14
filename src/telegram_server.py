@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -49,12 +51,73 @@ def _telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any] | None
         return None
 
 
+def _markdown_to_telegram_html(text: str) -> str:
+    """Convert common LLM Markdown into safe Telegram-compatible HTML."""
+    code_blocks: list[str] = []
+    inline_codes: list[str] = []
+
+    def _stash_code_block(match: re.Match[str]) -> str:
+        code_blocks.append(f"<pre>{html.escape(match.group(1).strip())}</pre>")
+        return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
+
+    def _stash_inline_code(match: re.Match[str]) -> str:
+        inline_codes.append(f"<code>{html.escape(match.group(1))}</code>")
+        return f"\x00INLINECODE{len(inline_codes) - 1}\x00"
+
+    # Extract code spans before escaping or formatting the rest of the text.
+    out = re.sub(r"```(?:[a-zA-Z0-9_+-]+)?\n([\s\S]*?)```", _stash_code_block, text)
+    out = re.sub(r"`([^`\n]+)`", _stash_inline_code, out)
+    out = html.escape(out)
+
+    # Headings, horizontal rules, and bullet lists.
+    out = re.sub(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*$", r"<b>\1</b>", out)
+    out = re.sub(r"(?m)^\s*([-*_])\1{2,}\s*$", "──────────", out)
+    out = re.sub(r"(?m)^(\s*)[*-]\s+", r"\1• ", out)
+
+    # Links, bold, and asterisk-italics (avoid underscores so snake_case stays intact).
+    out = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', out)
+    out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
+    out = re.sub(r"__(.+?)__", r"<b>\1</b>", out)
+    out = re.sub(r"(?<!\w)\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", out)
+
+    for idx, block in enumerate(code_blocks):
+        out = out.replace(f"\x00CODEBLOCK{idx}\x00", block)
+    for idx, code in enumerate(inline_codes):
+        out = out.replace(f"\x00INLINECODE{idx}\x00", code)
+    return out
+
+
+def _chunk_text(text: str, max_len: int = 4000) -> list[str]:
+    if not text:
+        return ["(empty response)"]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > max_len:
+        split_at = remaining.rfind("\n", max_len // 2, max_len)
+        if split_at == -1:
+            split_at = max_len
+        else:
+            split_at += 1
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 def _send_telegram_message(chat_id: int, text: str) -> int | None:
-    # Telegram limit is 4096 chars per message.
-    chunks = [text[i : i + 4000] for i in range(0, len(text), 4000)] or ["(empty response)"]
     last_message_id: int | None = None
-    for chunk in chunks:
-        data = _telegram_api("sendMessage", {"chat_id": chat_id, "text": chunk})
+    for chunk in _chunk_text(text, max_len=4000):
+        html_chunk = _markdown_to_telegram_html(chunk)
+        data: dict[str, Any] | None = None
+        if len(html_chunk) <= 4096:
+            data = _telegram_api(
+                "sendMessage",
+                {"chat_id": chat_id, "text": html_chunk, "parse_mode": "HTML"},
+            )
+        if data is None:
+            # Fallback to plain text if HTML formatting is rejected or exceeds Telegram's 4096 limit.
+            data = _telegram_api("sendMessage", {"chat_id": chat_id, "text": chunk})
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             last_message_id = data["result"].get("message_id")
     return last_message_id
