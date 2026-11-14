@@ -210,7 +210,8 @@ def test_telegram_status_updates_on_model_switch(monkeypatch):
 
         def generate(self, system_prompt: str, messages: list[dict[str, Any]], tools: list[ToolSpec]) -> LLMResponse:
             if self.on_status is not None:
-                self.on_status("🔄 gemini-3-flash-preview 額度已滿 (429)，切換至 gemini-3.1-flash-lite")
+                self.on_status("🔄 gemini-3-flash-preview 額度已滿 (429)，切換至 gemini-3.8-flash")
+                self.on_status("🔄 gemini-3.8-flash 逾時 (504)，切換至 gemini-3.1-flash-lite")
             self.model = "gemini-3.1-flash-lite"
             return super().generate(system_prompt, messages, tools)
 
@@ -218,7 +219,10 @@ def test_telegram_status_updates_on_model_switch(monkeypatch):
     telegram_server._run_triage_and_reply(999, "測試模型切換提示")
 
     edits = [p["text"] for m, p in api_calls if m == "editMessageText"]
-    assert any("切換至 gemini-3.1-flash-lite" in text for text in edits)
+    assert any("切換至 gemini-3.1-flash-lite" in text and "gemini-3.8-flash 逾時" in text for text in edits)
+    # In-place replacement: the earlier switch line should NOT remain stacked alongside the latest one.
+    latest_progress = edits[-2]
+    assert "切換至 gemini-3.8-flash" not in latest_progress
     assert any("gemini-3.1-flash-lite" in text and "排查完成" in text for text in edits)
 
 

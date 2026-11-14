@@ -147,11 +147,15 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
     status_msg_id = _send_telegram_message(chat_id, "🔍 收到！正在啟動排查...")
     _send_typing(chat_id)
     progress_lines: list[str] = []
+    model_status: list[str] = []  # Single mutable slot so model switches update in-place without clutter.
 
-    def _append_progress(line: str) -> None:
-        progress_lines.append(line)
-        if status_msg_id is not None:
-            _edit_telegram_message(chat_id, status_msg_id, "🔍 思考與排查中：\n" + "\n".join(progress_lines))
+    def _render_progress() -> None:
+        if status_msg_id is None:
+            return
+        body = list(progress_lines)
+        if model_status:
+            body.append(f"• {model_status[0]}")
+        _edit_telegram_message(chat_id, status_msg_id, "🔍 思考與排查中：\n" + "\n".join(body))
         _send_typing(chat_id)
 
     def _on_event(event: TrajectoryEvent) -> None:
@@ -161,10 +165,12 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
         elif event.event_type == "tool_call" and event.detail.get("tool") != "load_skill":
             line = f"• [Step {event.step}] 查詢工具：{event.detail['tool']}"
         if line is not None:
-            _append_progress(line)
+            progress_lines.append(line)
+            _render_progress()
 
     def _on_status(status_msg: str) -> None:
-        _append_progress(f"• {status_msg}")
+        model_status[:] = [status_msg]
+        _render_progress()
 
     history = _chat_histories.setdefault(chat_id, [])
     try:
