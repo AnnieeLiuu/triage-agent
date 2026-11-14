@@ -255,3 +255,29 @@ def test_gemini_build_contents_merges_parallel_tool_responses():
     assert len(contents[2].parts) == 2
     assert contents[2].parts[0].function_response.name == "check_neon_health"
     assert contents[2].parts[1].function_response.name == "check_llm_providers"
+
+
+def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
+    assert GeminiClient._extract_retry_delay("Please retry in 29.0096s.") == 30.5096
+    assert GeminiClient._extract_retry_delay("no delay info", default=12.0) == 12.0
+    assert GeminiClient._extract_retry_delay("Please retry in 99s.") == 40.0
+
+    slept: list[float] = []
+    monkeypatch.setattr("src.harness.time.sleep", lambda s: slept.append(s))
+
+    attempts = {"n": 0}
+
+    class _FakeModels:
+        def generate_content(self, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("429 RESOURCE_EXHAUSTED. Please retry in 7.5s.")
+            return "ok-resp"
+
+    client = object.__new__(GeminiClient)
+    client.model = "gemini-3-flash-preview"
+    client._client = type("_FakeInner", (), {"models": _FakeModels()})()
+
+    assert client._call_with_rate_limit_retry([], None) == "ok-resp"
+    assert attempts["n"] == 2
+    assert slept == [9.0]

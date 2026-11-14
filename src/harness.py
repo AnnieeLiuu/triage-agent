@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Protocol
 
 from src.skills_loader import SkillLoader
+
+logger = logging.getLogger(__name__)
 
 
 class ToolPermission(str, Enum):
@@ -139,7 +144,7 @@ class GeminiClient:
             tools=[types.Tool(function_declarations=declarations)],
         )
         contents = self._build_contents(messages)
-        resp = self._client.models.generate_content(model=self.model, contents=contents, config=config)
+        resp = self._call_with_rate_limit_retry(contents, config)
 
         tool_calls: list[ToolCallRequest] = []
         candidates = getattr(resp, "candidates", None) or []
@@ -162,6 +167,28 @@ class GeminiClient:
         if not tool_calls:
             text = getattr(resp, "text", None) or ""
         return LLMResponse(text=text, tool_calls=tool_calls)
+
+    def _call_with_rate_limit_retry(self, contents: list[Any], config: Any, max_retries: int = 2) -> Any:
+        """Retry on 429 RESOURCE_EXHAUSTED (e.g. 5 RPM free-tier limit) using API retryDelay."""
+        for attempt in range(max_retries + 1):
+            try:
+                return self._client.models.generate_content(model=self.model, contents=contents, config=config)
+            except Exception as exc:
+                err_str = str(exc)
+                is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                if not is_rate_limit or attempt >= max_retries:
+                    raise
+                delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
+                logger.warning("Gemini 429 rate limit hit (attempt %d/%d); sleeping %.1fs.", attempt + 1, max_retries, delay)
+                time.sleep(delay)
+
+    @staticmethod
+    def _extract_retry_delay(err_str: str, default: float = 20.0) -> float:
+        match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
+        if not match:
+            match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", err_str)
+        seconds = float(match.group(1)) + 1.5 if match else default
+        return min(max(seconds, 5.0), 40.0)
 
     @staticmethod
     def _build_contents(messages: list[dict[str, Any]]) -> list[Any]:
