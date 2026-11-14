@@ -124,6 +124,7 @@ class GeminiClient:
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
         raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
         self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
+        self._use_groq_fallback = False
 
     def generate(
         self,
@@ -131,6 +132,9 @@ class GeminiClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec],
     ) -> LLMResponse:
+        if getattr(self, "_use_groq_fallback", False):
+            return self._call_groq_fallback(system_prompt, messages, tools)
+
         from google.genai import types
 
         declarations = [
@@ -146,7 +150,16 @@ class GeminiClient:
             tools=[types.Tool(function_declarations=declarations)],
         )
         contents = self._build_contents(messages)
-        resp = self._call_with_rate_limit_retry(contents, config)
+        try:
+            resp = self._call_with_rate_limit_retry(contents, config)
+        except Exception as exc:
+            err_str = str(exc)
+            is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            if is_rate_limit and os.getenv("GROQ_API_KEY", "").strip():
+                logger.warning("All Gemini models exhausted (%s); falling back to Groq.", err_str[:120])
+                self._use_groq_fallback = True
+                return self._call_groq_fallback(system_prompt, messages, tools)
+            raise
 
         tool_calls: list[ToolCallRequest] = []
         candidates = getattr(resp, "candidates", None) or []
@@ -207,6 +220,108 @@ class GeminiClient:
                     time.sleep(delay)
         assert last_exc is not None
         raise last_exc
+
+    @staticmethod
+    def _build_openai_payload(
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec],
+    ) -> dict[str, Any]:
+        """Convert normalized harness messages/tools to OpenAI-compatible Chat Completions format."""
+        oai_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        pending_call_ids: list[tuple[str, str]] = []
+        call_seq = 0
+
+        for msg in messages:
+            role = msg["role"]
+            if role == "assistant" and msg.get("tool_calls"):
+                oai_calls = []
+                pending_call_ids = []
+                for tc in msg["tool_calls"]:
+                    call_seq += 1
+                    call_id = f"call_{call_seq}"
+                    pending_call_ids.append((tc["name"], call_id))
+                    oai_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                            },
+                        }
+                    )
+                oai_messages.append({"role": "assistant", "content": None, "tool_calls": oai_calls})
+            elif role == "tool":
+                matched_id = f"call_{call_seq}"
+                for idx, (t_name, cid) in enumerate(pending_call_ids):
+                    if t_name == msg["name"]:
+                        matched_id = cid
+                        pending_call_ids.pop(idx)
+                        break
+                oai_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": matched_id,
+                        "name": msg["name"],
+                        "content": str(msg.get("content", "")),
+                    }
+                )
+            else:
+                oai_messages.append({"role": role, "content": str(msg.get("content", ""))})
+
+        oai_tools = [
+            {
+                "type": "function",
+                "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
+            }
+            for t in tools
+        ]
+        return {"messages": oai_messages, "tools": oai_tools}
+
+    def _call_groq_fallback(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec],
+    ) -> LLMResponse:
+        """Cross-provider fallback to Groq OpenAI-compatible API when Gemini quota is exhausted."""
+        import httpx
+
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured for fallback.")
+
+        raw_models = os.getenv("GROQ_FALLBACK_MODELS", "llama-3.3-70b-versatile,openai/gpt-oss-120b")
+        groq_models = [m.strip() for m in raw_models.split(",") if m.strip()]
+        payload_base = self._build_openai_payload(system_prompt, messages, tools)
+
+        last_error: Exception | None = None
+        for groq_model in groq_models:
+            try:
+                resp = httpx.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"model": groq_model, **payload_base},
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                msg = data["choices"][0]["message"]
+                raw_calls = msg.get("tool_calls") or []
+                tool_calls: list[ToolCallRequest] = []
+                for tc in raw_calls:
+                    fn = tc.get("function") or {}
+                    raw_args = fn.get("arguments") or "{}"
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+                    tool_calls.append(ToolCallRequest(name=fn["name"], arguments=args))
+                text = None if tool_calls else (msg.get("content") or "")
+                return LLMResponse(text=text, tool_calls=tool_calls)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Groq fallback model %s failed: %s", groq_model, exc)
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _extract_retry_delay(err_str: str, default: float = 20.0) -> float | None:

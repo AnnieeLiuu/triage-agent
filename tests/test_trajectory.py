@@ -304,3 +304,54 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
     assert models_called == ["gemini-3-flash-preview", "gemini-2.5-flash"]
     assert fb_client.model == "gemini-2.5-flash"
     assert slept == []
+
+
+def test_gemini_cross_provider_groq_fallback(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "fake-groq-key")
+    monkeypatch.setenv("GROQ_FALLBACK_MODELS", "llama-3.3-70b-versatile")
+
+    class _AlwaysExhaustedModels:
+        def generate_content(self, **kwargs):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")
+
+    posted: list[dict[str, Any]] = []
+
+    class _FakeHttpResp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "check_neon_health", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "httpx.post",
+        lambda url, headers, json, timeout: posted.append(json) or _FakeHttpResp(),
+    )
+
+    client = object.__new__(GeminiClient)
+    client.model = "gemini-3-flash-preview"
+    client.fallback_models = ["gemini-2.5-flash"]
+    client._use_groq_fallback = False
+    client._client = type("_FakeInner", (), {"models": _AlwaysExhaustedModels()})()
+
+    tool = ToolSpec("check_neon_health", "check db", ToolPermission.READ, lambda: {})
+    res = client.generate("sys", [{"role": "user", "content": "查 DB"}], [tool])
+    assert client._use_groq_fallback is True
+    assert posted[0]["model"] == "llama-3.3-70b-versatile"
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0].name == "check_neon_health"
