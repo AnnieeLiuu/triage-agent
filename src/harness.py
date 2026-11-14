@@ -112,7 +112,7 @@ class GeminiClient:
         if not resolved_key:
             raise ValueError("GEMINI_API_KEY is required to run GeminiClient.")
         self._client = genai.Client(api_key=resolved_key, http_options=types.HttpOptions(timeout=timeout_ms))
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
     def generate(
         self,
