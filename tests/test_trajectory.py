@@ -298,10 +298,12 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
                 raise RuntimeError("504 DEADLINE_EXCEEDED: Deadline expired")
             return "fallback-ok"
 
+    statuses: list[str] = []
     slept.clear()
     fb_client = object.__new__(GeminiClient)
     fb_client.model = "gemini-3-flash-preview"
     fb_client.fallback_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"]
+    fb_client.on_status = statuses.append
     fb_client._client = type("_FakeInner", (), {"models": _FakeFallbackModels()})()
 
     assert fb_client._call_with_rate_limit_retry([], None) == "fallback-ok"
@@ -313,6 +315,10 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
     ]
     assert fb_client.model == "gemini-3.1-flash-lite"
     assert slept == []
+    assert len(statuses) == 3
+    assert "gemini-2.5-flash" in statuses[0]
+    assert "gemini-3.8-flash" in statuses[1]
+    assert "gemini-3.1-flash-lite" in statuses[2]
 
 
 def test_gemini_cross_provider_groq_fallback(monkeypatch):

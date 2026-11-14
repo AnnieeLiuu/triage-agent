@@ -190,5 +190,37 @@ def test_markdown_to_telegram_html_and_fallback(monkeypatch):
     assert calls[1]["text"] == "**fallback test**"
 
 
+def test_telegram_status_updates_on_model_switch(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_ID", "999")
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    telegram_server._chat_histories.pop(999, None)
+
+    api_calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        telegram_server,
+        "_telegram_api",
+        lambda m, p: api_calls.append((m, p)) or {"result": {"message_id": 55}},
+    )
+
+    class _SwitchingLLM(_ScriptedLLM):
+        def __init__(self) -> None:
+            super().__init__([LLMResponse(text="切換完成並查出原因。")])
+            self.model = "gemini-3-flash-preview"
+            self.on_status = None
+
+        def generate(self, system_prompt: str, messages: list[dict[str, Any]], tools: list[ToolSpec]) -> LLMResponse:
+            if self.on_status is not None:
+                self.on_status("🔄 gemini-3-flash-preview 額度已滿 (429)，切換至 gemini-3.1-flash-lite")
+            self.model = "gemini-3.1-flash-lite"
+            return super().generate(system_prompt, messages, tools)
+
+    monkeypatch.setattr(telegram_server, "GeminiClient", _SwitchingLLM)
+    telegram_server._run_triage_and_reply(999, "測試模型切換提示")
+
+    edits = [p["text"] for m, p in api_calls if m == "editMessageText"]
+    assert any("切換至 gemini-3.1-flash-lite" in text for text in edits)
+    assert any("gemini-3.1-flash-lite" in text and "排查完成" in text for text in edits)
+
+
 # Keep os imported for env-based MCP tests if needed
 _ = os

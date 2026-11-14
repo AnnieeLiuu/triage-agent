@@ -148,22 +148,29 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
     _send_typing(chat_id)
     progress_lines: list[str] = []
 
+    def _append_progress(line: str) -> None:
+        progress_lines.append(line)
+        if status_msg_id is not None:
+            _edit_telegram_message(chat_id, status_msg_id, "🔍 思考與排查中：\n" + "\n".join(progress_lines))
+        _send_typing(chat_id)
+
     def _on_event(event: TrajectoryEvent) -> None:
         line: str | None = None
         if event.event_type == "skill_loaded":
             line = f"• [Step {event.step}] 載入 SOP：{event.detail['skill']}"
         elif event.event_type == "tool_call" and event.detail.get("tool") != "load_skill":
             line = f"• [Step {event.step}] 查詢工具：{event.detail['tool']}"
-        if line is None:
-            return
-        progress_lines.append(line)
-        if status_msg_id is not None:
-            _edit_telegram_message(chat_id, status_msg_id, "🔍 思考與排查中：\n" + "\n".join(progress_lines))
-        _send_typing(chat_id)
+        if line is not None:
+            _append_progress(line)
+
+    def _on_status(status_msg: str) -> None:
+        _append_progress(f"• {status_msg}")
 
     history = _chat_histories.setdefault(chat_id, [])
     try:
         llm = GeminiClient()
+        if hasattr(llm, "on_status"):
+            llm.on_status = _on_status
         with MCPStdioClient() as mcp_client:
             tools = mcp_client.build_tool_specs()
             harness = TriageHarness(
@@ -178,7 +185,9 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
         if len(history) > _MAX_HISTORY_MESSAGES:
             _chat_histories[chat_id] = history[-_MAX_HISTORY_MESSAGES:]
         if status_msg_id is not None:
-            summary_header = f"✅ 排查完成（共 {result.steps_used} 步）"
+            model_name = getattr(llm, "model", None)
+            model_tag = f"｜{model_name}" if model_name else ""
+            summary_header = f"✅ 排查完成（共 {result.steps_used} 步{model_tag}）"
             if progress_lines:
                 summary_header += "：\n" + "\n".join(progress_lines)
             _edit_telegram_message(chat_id, status_msg_id, summary_header)

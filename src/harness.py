@@ -110,7 +110,13 @@ class TriageResult:
 class GeminiClient:
     """Google GenAI adapter implementing LLMClient."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, timeout_ms: int = 30000) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_ms: int = 30000,
+        on_status: Callable[[str], None] | None = None,
+    ) -> None:
         from google import genai
         from google.genai import types
 
@@ -125,6 +131,24 @@ class GeminiClient:
         raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash,gemini-3.1-flash-lite")
         self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
         self._use_groq_fallback = False
+        self.on_status = on_status
+
+    def _notify_status(self, message: str) -> None:
+        cb = getattr(self, "on_status", None)
+        if cb is not None:
+            cb(message)
+
+    @staticmethod
+    def _short_error_reason(err_str: str) -> str:
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            return "額度已滿 (429)"
+        if "404" in err_str or "NOT_FOUND" in err_str:
+            return "不可用 (404)"
+        if "503" in err_str or "UNAVAILABLE" in err_str:
+            return "高負載 (503)"
+        if "504" in err_str or "DEADLINE_EXCEEDED" in err_str:
+            return "逾時 (504)"
+        return "異常"
 
     def generate(
         self,
@@ -160,6 +184,9 @@ class GeminiClient:
             )
             if is_fallback_err and os.getenv("GROQ_API_KEY", "").strip():
                 logger.warning("All Gemini models failed (%s); falling back to Groq.", err_str[:120])
+                self._notify_status(
+                    f"🔄 Gemini 備援皆{self._short_error_reason(err_str)}，切換至 Groq"
+                )
                 self._use_groq_fallback = True
                 return self._call_groq_fallback(system_prompt, messages, tools)
             raise
@@ -207,6 +234,11 @@ class GeminiClient:
                     )
                     if is_unavailable:
                         logger.warning("Gemini model %s unavailable (%s); trying next fallback.", candidate_model, err_str[:80])
+                        if has_fallback:
+                            next_model = candidates[idx + 1]
+                            self._notify_status(
+                                f"🔄 {candidate_model} {self._short_error_reason(err_str)}，切換至 {next_model}"
+                            )
                         break
                     is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
                     if not is_rate_limit:
@@ -214,10 +246,15 @@ class GeminiClient:
                     delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
                     if delay is None:
                         logger.warning("Gemini daily quota (RPD) hit on %s; switching fallback.", candidate_model)
+                        if has_fallback:
+                            next_model = candidates[idx + 1]
+                            self._notify_status(f"🔄 {candidate_model} 額度已滿 (429)，切換至 {next_model}")
                         break
                     if attempt >= max_retries:
                         if has_fallback:
                             logger.warning("Retries exhausted on %s; trying fallback.", candidate_model)
+                            next_model = candidates[idx + 1]
+                            self._notify_status(f"🔄 {candidate_model} 重試上限，切換至 {next_model}")
                         break
                     logger.warning(
                         "Gemini 429 RPM hit on %s (attempt %d/%d); sleeping %.1fs.",
@@ -226,6 +263,7 @@ class GeminiClient:
                         max_retries,
                         delay,
                     )
+                    self._notify_status(f"⏳ {candidate_model} 限流 (429)，等待 {delay:.0f}s 重試")
                     time.sleep(delay)
         assert last_exc is not None
         raise last_exc
@@ -306,8 +344,10 @@ class GeminiClient:
         payload_base = self._build_openai_payload(system_prompt, messages, tools)
 
         last_error: Exception | None = None
-        for groq_model in groq_models:
+        for idx, groq_model in enumerate(groq_models):
             try:
+                if idx > 0:
+                    self._notify_status(f"🔄 切換 Groq 模型至 {groq_model}")
                 resp = httpx.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -315,6 +355,7 @@ class GeminiClient:
                     timeout=30.0,
                 )
                 resp.raise_for_status()
+                self.model = f"groq/{groq_model}"
                 data = resp.json()
                 msg = data["choices"][0]["message"]
                 raw_calls = msg.get("tool_calls") or []
