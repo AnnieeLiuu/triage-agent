@@ -402,3 +402,14 @@ def test_gemini_cross_provider_groq_fallback(monkeypatch):
     assert res2.text == "DB 正常"
     assert posted[0]["messages"][-1]["role"] == "tool"
     assert posted[0]["messages"][-1]["tool_call_id"] == "call_1"
+
+
+def test_system_prompt_concise_operator_guidance(tmp_path: Path):
+    harness = TriageHarness(
+        llm_client=ScriptedMockLLM([]),
+        skill_loader=SkillLoader("skills"),
+        tools=_mock_read_tools(tmp_path),
+    )
+    prompt = harness.build_system_prompt()
+    assert "150–250 字" in prompt
+    assert "工程師" in prompt

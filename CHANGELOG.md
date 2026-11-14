@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **精簡工程師導向回覆格式（`src/harness.py`）**：在 System Prompt 引導模型對工程師輸出精簡條列（根因、證據、建議處置，控制在 150–250 字內），去除客服式客套與冗長重複敘述。
 - **Telegram 模型切換即時進度提示（`src/harness.py`、`src/telegram_server.py`）**：切換備用模型（或切至 Groq / 等待 429）時，透過 `on_status` **原地更新同一行**切換狀態（不洗版、也不會在過程中顯示 `❌`），並在完成標題顯示最終使用模型。
 - **Groq 跨 Provider 備援（`src/harness.py`）**：當所有 Gemini 模型額度耗盡（429）且已設定 `GROQ_API_KEY` 時，自動切換至 Groq（預設 `llama-3.3-70b-versatile`、`openai/gpt-oss-120b`）。
 - **Gemini 備用模型鏈（`src/harness.py`）**：設定 `GEMINI_FALLBACK_MODELS`（預設 `gemini-3.8-flash,gemini-3.1-flash-lite`），遇到每日額度（`PerDay` / `RPD`）或長延遲（`>60s`）時不等待直接切換。
