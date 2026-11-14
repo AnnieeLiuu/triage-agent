@@ -98,6 +98,7 @@ class TriageResult:
     stopped_reason: str  # "completed" | "max_steps"
     steps_used: int
     trajectory: TrajectoryRecorder
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 class GeminiClient:
@@ -133,7 +134,7 @@ class GeminiClient:
             system_instruction=system_prompt,
             tools=[types.Tool(function_declarations=declarations)],
         )
-        contents = [self._to_content(m) for m in messages]
+        contents = self._build_contents(messages)
         resp = self._client.models.generate_content(model=self.model, contents=contents, config=config)
 
         tool_calls: list[ToolCallRequest] = []
@@ -147,30 +148,45 @@ class GeminiClient:
         return LLMResponse(text=text, tool_calls=tool_calls)
 
     @staticmethod
-    def _to_content(message: dict[str, Any]) -> Any:
+    def _build_contents(messages: list[dict[str, Any]]) -> list[Any]:
+        """Convert normalized messages to Gemini Content, merging consecutive tool responses."""
         from google.genai import types
 
-        role = message["role"]
-        if role == "tool":
-            return types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_function_response(
-                        name=message["name"],
-                        response={"result": message["content"]},
+        contents: list[Any] = []
+        idx = 0
+        while idx < len(messages):
+            msg = messages[idx]
+            role = msg["role"]
+
+            if role == "tool":
+                tool_parts = []
+                while idx < len(messages) and messages[idx]["role"] == "tool":
+                    t_msg = messages[idx]
+                    tool_parts.append(
+                        types.Part.from_function_response(
+                            name=t_msg["name"],
+                            response={"result": t_msg["content"]},
+                        )
                     )
-                ],
-            )
-        if role == "assistant" and message.get("tool_calls"):
-            parts = [
-                types.Part.from_function_call(name=tc["name"], args=tc.get("arguments", {}))
-                for tc in message["tool_calls"]
-            ]
-            return types.Content(role="model", parts=parts)
-        return types.Content(
-            role="model" if role == "assistant" else "user",
-            parts=[types.Part.from_text(text=str(message.get("content", "")))],
-        )
+                    idx += 1
+                contents.append(types.Content(role="user", parts=tool_parts))
+                continue
+
+            if role == "assistant" and msg.get("tool_calls"):
+                parts = [
+                    types.Part.from_function_call(name=tc["name"], args=tc.get("arguments", {}))
+                    for tc in msg["tool_calls"]
+                ]
+                contents.append(types.Content(role="model", parts=parts))
+            else:
+                contents.append(
+                    types.Content(
+                        role="model" if role == "assistant" else "user",
+                        parts=[types.Part.from_text(text=str(msg.get("content", "")))],
+                    )
+                )
+            idx += 1
+        return contents
 
 
 class TriageHarness:
@@ -217,11 +233,12 @@ class TriageHarness:
             f"可用 Skills 清單：\n{skill_index}"
         )
 
-    def run(self, user_query: str) -> TriageResult:
+    def run(self, user_query: str, history: list[dict[str, Any]] | None = None) -> TriageResult:
         """Execute the ReAct loop until completion or max_steps circuit breaker."""
         recorder = TrajectoryRecorder(on_event=self.on_event)
         system_prompt = self.build_system_prompt()
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_query}]
+        messages: list[dict[str, Any]] = list(history) if history is not None else []
+        messages.append({"role": "user", "content": user_query})
         tool_list = list(self.tools.values())
 
         for step in range(1, self.max_steps + 1):
@@ -229,12 +246,16 @@ class TriageHarness:
 
             if not response.tool_calls:
                 answer = response.text or ""
+                messages.append({"role": "assistant", "content": answer})
+                if history is not None:
+                    history[:] = messages
                 recorder.record(step, "final_answer", {"answer": answer})
                 return TriageResult(
                     answer=answer,
                     stopped_reason="completed",
                     steps_used=step,
                     trajectory=recorder,
+                    messages=messages,
                 )
 
             messages.append(
@@ -255,11 +276,16 @@ class TriageHarness:
                 )
 
         recorder.record(self.max_steps, "circuit_breaker", {"reason": "max_steps_reached"})
+        answer = f"已達最大步數上限 ({self.max_steps})，觸發步數熔斷並中止排查。"
+        messages.append({"role": "assistant", "content": answer})
+        if history is not None:
+            history[:] = messages
         return TriageResult(
-            answer=f"已達最大步數上限 ({self.max_steps})，觸發步數熔斷並中止排查。",
+            answer=answer,
             stopped_reason="max_steps",
             steps_used=self.max_steps,
             trajectory=recorder,
+            messages=messages,
         )
 
     def _execute_tool_call(

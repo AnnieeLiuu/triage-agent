@@ -1,5 +1,6 @@
 """End-to-end tests verifying real MCP stdio transport between TriageHarness and FastMCP ops_server."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ def test_mcp_stdio_list_tools_and_permissions():
     assert specs["get_recent_agent_runs"].permission == ToolPermission.READ
     assert specs["check_llm_providers"].permission == ToolPermission.READ
     assert specs["save_eval_case"].permission == ToolPermission.WRITE
+    assert "cases_dir" not in specs["save_eval_case"].parameters.get("properties", {})
 
 
 def test_harness_runs_real_mcp_stdio_tools_with_hitl_gate(tmp_path: Path):
@@ -50,7 +52,6 @@ def test_harness_runs_real_mcp_stdio_tools_with_hitl_gate(tmp_path: Path):
                             "case_id": "mcp-denied-case",
                             "title": "Denied over MCP",
                             "root_cause": "Test",
-                            "cases_dir": str(tmp_path),
                         },
                     )
                 ]
@@ -69,7 +70,6 @@ def test_harness_runs_real_mcp_stdio_tools_with_hitl_gate(tmp_path: Path):
                             "case_id": "mcp-approved-case",
                             "title": "Approved over MCP",
                             "root_cause": "Verified via real MCP stdio",
-                            "cases_dir": str(tmp_path),
                         },
                     )
                 ]
@@ -78,7 +78,7 @@ def test_harness_runs_real_mcp_stdio_tools_with_hitl_gate(tmp_path: Path):
         ]
     )
 
-    with MCPStdioClient() as client:
+    with MCPStdioClient(env={**os.environ, "TRIAGE_EVAL_CASES_DIR": str(tmp_path)}) as client:
         mcp_tools = client.build_tool_specs()
 
         denied_harness = TriageHarness(

@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         print("PickForMe Incident Triage Agent (輸入 'exit' 或 'quit' 離開)")
+        history: list[dict[str, Any]] = []
         while True:
             try:
                 query = input("\n請輸入排查需求> ").strip()
@@ -76,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
                 break
             if not query or query.lower() in {"exit", "quit"}:
                 break
-            result = harness.run(query)
+            result = harness.run(query, history=history)
             print(f"\n=== 排查結論 ({result.stopped_reason}, {result.steps_used} steps) ===")
             print(result.answer)
     return 0

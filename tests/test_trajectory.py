@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.harness import LLMResponse, ToolCallRequest, ToolPermission, ToolSpec, TriageHarness
+from src.harness import GeminiClient, LLMResponse, ToolCallRequest, ToolPermission, ToolSpec, TriageHarness
 from src.skills_loader import SkillLoader
 
 
@@ -212,3 +212,46 @@ def test_trajectory_max_steps_circuit_breaker(tmp_path: Path):
     assert result.stopped_reason == "max_steps"
     assert result.steps_used == 3
     assert result.trajectory.events[-1].event_type == "circuit_breaker"
+
+
+def test_trajectory_multiturn_preserves_history(tmp_path: Path):
+    mock_llm = ScriptedMockLLM(
+        [
+            LLMResponse(text="剛剛那筆燒肉 trace_id 是 tr-yakiniku，預算欄位是 null。"),
+            LLMResponse(text="好的，已依據前文 tr-yakiniku 完成紀錄。"),
+        ]
+    )
+    harness = TriageHarness(
+        llm_client=mock_llm,
+        skill_loader=SkillLoader("skills"),
+        tools=_mock_read_tools(tmp_path),
+    )
+
+    history: list[dict[str, Any]] = []
+    res1 = harness.run("剛剛的燒肉那則怎麼沒有金額？", history=history)
+    assert "tr-yakiniku" in res1.answer
+
+    harness.run("把剛剛那筆存成 eval case", history=history)
+    turn2_messages = mock_llm.calls[1]["messages"]
+    assert any("燒肉" in str(m.get("content", "")) for m in turn2_messages)
+    assert any("tr-yakiniku" in str(m.get("content", "")) for m in turn2_messages)
+
+
+def test_gemini_build_contents_merges_parallel_tool_responses():
+    messages = [
+        {"role": "user", "content": "查一下"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"name": "check_neon_health", "arguments": {}},
+                {"name": "check_llm_providers", "arguments": {}},
+            ],
+        },
+        {"role": "tool", "name": "check_neon_health", "content": '{"ok": true}'},
+        {"role": "tool", "name": "check_llm_providers", "content": '{"gemini": true}'},
+    ]
+    contents = GeminiClient._build_contents(messages)
+    assert len(contents) == 3
+    assert len(contents[2].parts) == 2
+    assert contents[2].parts[0].function_response.name == "check_neon_health"
+    assert contents[2].parts[1].function_response.name == "check_llm_providers"

@@ -41,6 +41,16 @@ def _get_langfuse_auth() -> tuple[str, str, str] | None:
     return public_key, secret_key, host
 
 
+def _truncate_io(value: Any, max_chars: int = 1500) -> Any:
+    """Truncate large observation input/output payloads to protect LLM context."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return value
+    return text[:max_chars] + f"... [truncated {len(text) - max_chars} chars]"
+
+
 def _fetch_observations(params: dict[str, Any]) -> list[dict[str, Any]]:
     """Query Langfuse v2 observations API with explicit timeout."""
     auth_info = _get_langfuse_auth()
@@ -59,8 +69,8 @@ def _fetch_observations(params: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-def fetch_failed_traces(limit: int = 10, days: int = 7) -> list[dict[str, Any]]:
-    """Fetch recent failed or error Langfuse traces for PickForMe via v2 observations API."""
+def fetch_failed_traces(limit: int = 10, days: int = 7, only_errors: bool = False) -> list[dict[str, Any]]:
+    """Fetch recent Langfuse traces (with user input preview) or filter server-side for ERROR level."""
     if _get_langfuse_auth() is None:
         return [{"error": "LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY is not configured."}]
 
@@ -68,15 +78,17 @@ def fetch_failed_traces(limit: int = 10, days: int = 7) -> list[dict[str, Any]]:
     from_iso = (now - timedelta(days=max(1, days))).isoformat().replace("+00:00", "Z")
     to_iso = now.isoformat().replace("+00:00", "Z")
 
+    params: dict[str, Any] = {
+        "fields": "core,basic,io",
+        "fromStartTime": from_iso,
+        "toStartTime": to_iso,
+        "limit": max(1, min(limit * 5, 100)),
+    }
+    if only_errors:
+        params["level"] = "ERROR"
+
     try:
-        observations = _fetch_observations(
-            {
-                "fields": "core,basic",
-                "fromStartTime": from_iso,
-                "toStartTime": to_iso,
-                "limit": max(1, min(limit * 5, 100)),
-            }
-        )
+        observations = _fetch_observations(params)
     except Exception as exc:
         return [{"error": f"Failed to fetch Langfuse observations: {exc}"}]
 
@@ -97,11 +109,18 @@ def fetch_failed_traces(limit: int = 10, days: int = 7) -> list[dict[str, Any]]:
                 "level": level,
                 "status_message": status_msg,
                 "start_time": obs.get("startTime"),
+                "input_preview": _truncate_io(obs.get("input"), max_chars=300),
+                "output_preview": _truncate_io(obs.get("output"), max_chars=300),
                 "observation_count": 0,
                 "has_error": False,
             },
         )
         entry["observation_count"] += 1
+        # Prefer root observation's input/output when available
+        if obs.get("parentObservationId") is None and obs.get("input") is not None:
+            entry["input_preview"] = _truncate_io(obs.get("input"), max_chars=300)
+            entry["output_preview"] = _truncate_io(obs.get("output"), max_chars=300)
+            entry["name"] = obs.get("name") or entry["name"]
         if is_error:
             entry["has_error"] = True
             entry["level"] = "ERROR"
@@ -109,9 +128,9 @@ def fetch_failed_traces(limit: int = 10, days: int = 7) -> list[dict[str, Any]]:
                 entry["status_message"] = status_msg
 
     traces = list(grouped.values())
-    error_traces = [t for t in traces if t["has_error"]]
-    selected = error_traces if error_traces else traces
-    return selected[: max(1, min(limit, 50))]
+    if only_errors:
+        traces = [t for t in traces if t["has_error"]]
+    return traces[: max(1, min(limit, 50))]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -149,8 +168,8 @@ def get_trace_spans(trace_id: str, days: int = 7) -> dict[str, Any]:
             "latency": obs.get("latency"),
             "start_time": obs.get("startTime"),
             "end_time": obs.get("endTime"),
-            "input": obs.get("input"),
-            "output": obs.get("output"),
+            "input": _truncate_io(obs.get("input"), max_chars=2000),
+            "output": _truncate_io(obs.get("output"), max_chars=2000),
             "usage": {
                 "input": obs.get("inputUsage"),
                 "output": obs.get("outputUsage"),
@@ -306,14 +325,14 @@ def save_eval_case(
     trace_id: str | None = None,
     reproduction_input: dict[str, Any] | None = None,
     expected_behavior: str = "",
-    cases_dir: str | None = None,
 ) -> dict[str, Any]:
     """Save a verified incident root cause as a structured JSON eval case in evals/cases/."""
     safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", case_id).strip("-")
     if not safe_id:
         raise ValueError("case_id must contain at least one alphanumeric character.")
 
-    target_dir = Path(cases_dir) if cases_dir else DEFAULT_EVAL_CASES_DIR
+    env_dir = os.getenv("TRIAGE_EVAL_CASES_DIR", "").strip()
+    target_dir = Path(env_dir) if env_dir else DEFAULT_EVAL_CASES_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     out_path = target_dir / f"{safe_id}.json"
 

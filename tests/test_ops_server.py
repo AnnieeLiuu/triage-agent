@@ -60,7 +60,8 @@ def test_check_llm_providers_never_leaks_keys(monkeypatch: pytest.MonkeyPatch):
     assert "secret-groq-key" not in serialized
 
 
-def test_save_eval_case_writes_sanitized_json(tmp_path: Path):
+def test_save_eval_case_writes_sanitized_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TRIAGE_EVAL_CASES_DIR", str(tmp_path))
     res = save_eval_case(
         case_id="../bad/path case 01",
         title="Stage 2 empty places",
@@ -68,7 +69,6 @@ def test_save_eval_case_writes_sanitized_json(tmp_path: Path):
         trace_id="tr-999",
         reproduction_input={"city": "Tokyo", "budget": 1000},
         expected_behavior="Fallback gracefully",
-        cases_dir=str(tmp_path),
     )
     assert res["saved"] is True
     out_file = Path(res["path"])
