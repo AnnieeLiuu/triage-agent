@@ -11,7 +11,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from src.harness import GeminiClient, TriageHarness
+from src.harness import GeminiClient, TrajectoryEvent, TriageHarness
 from src.mcp_client import MCPStdioClient
 from src.skills_loader import SkillLoader
 
@@ -32,23 +32,40 @@ def _is_allowed_user(user_id: int | None) -> bool:
     return user_id in allowed_ids
 
 
-def _send_telegram_message(chat_id: int, text: str) -> None:
+def _telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        logger.error("TELEGRAM_BOT_TOKEN is not configured; cannot send reply.")
-        return
+        logger.error("TELEGRAM_BOT_TOKEN is not configured; cannot call %s.", method)
+        return None
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=payload,
+            timeout=10.0,
+        )
+        return resp.json() if resp.status_code == 200 else None
+    except Exception as exc:
+        logger.exception("Telegram API %s failed: %s", method, exc)
+        return None
 
+
+def _send_telegram_message(chat_id: int, text: str) -> int | None:
     # Telegram limit is 4096 chars per message.
     chunks = [text[i : i + 4000] for i in range(0, len(text), 4000)] or ["(empty response)"]
+    last_message_id: int | None = None
     for chunk in chunks:
-        try:
-            httpx.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk},
-                timeout=10.0,
-            )
-        except Exception as exc:
-            logger.exception("Failed to send Telegram reply: %s", exc)
+        data = _telegram_api("sendMessage", {"chat_id": chat_id, "text": chunk})
+        if isinstance(data, dict) and isinstance(data.get("result"), dict):
+            last_message_id = data["result"].get("message_id")
+    return last_message_id
+
+
+def _edit_telegram_message(chat_id: int, message_id: int, text: str) -> None:
+    _telegram_api("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text[:4000]})
+
+
+def _send_typing(chat_id: int) -> None:
+    _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
 
 
 def _run_triage_and_reply(chat_id: int, text: str) -> None:
@@ -64,6 +81,23 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
         _send_telegram_message(chat_id, "已清除本次排查對話記憶。")
         return
 
+    status_msg_id = _send_telegram_message(chat_id, "🔍 收到！正在啟動排查...")
+    _send_typing(chat_id)
+    progress_lines: list[str] = []
+
+    def _on_event(event: TrajectoryEvent) -> None:
+        line: str | None = None
+        if event.event_type == "skill_loaded":
+            line = f"• [Step {event.step}] 載入 SOP：{event.detail['skill']}"
+        elif event.event_type == "tool_call" and event.detail.get("tool") != "load_skill":
+            line = f"• [Step {event.step}] 查詢工具：{event.detail['tool']}"
+        if line is None:
+            return
+        progress_lines.append(line)
+        if status_msg_id is not None:
+            _edit_telegram_message(chat_id, status_msg_id, "🔍 思考與排查中：\n" + "\n".join(progress_lines))
+        _send_typing(chat_id)
+
     history = _chat_histories.setdefault(chat_id, [])
     try:
         llm = GeminiClient()
@@ -75,14 +109,26 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
                 tools=tools,
                 # Cloud Run is stateless and read-only: fail-closed on WRITE tools.
                 confirm_fn=lambda _name, _args: False,
+                on_event=_on_event,
             )
-            result = harness.run(text, history=history)
+            result = harness.run(stripped, history=history)
         if len(history) > _MAX_HISTORY_MESSAGES:
             _chat_histories[chat_id] = history[-_MAX_HISTORY_MESSAGES:]
+        if status_msg_id is not None:
+            summary_header = f"✅ 排查完成（共 {result.steps_used} 步）"
+            if progress_lines:
+                summary_header += "：\n" + "\n".join(progress_lines)
+            _edit_telegram_message(chat_id, status_msg_id, summary_header)
         _send_telegram_message(chat_id, result.answer)
     except Exception as exc:
         logger.exception("Triage run failed: %s", exc)
-        _send_telegram_message(chat_id, f"排查過程發生錯誤：{exc}")
+        err_text = f"❌ 排查過程發生錯誤：{exc}"
+        if progress_lines:
+            err_text += "\n\n已完成步驟：\n" + "\n".join(progress_lines)
+        if status_msg_id is not None:
+            _edit_telegram_message(chat_id, status_msg_id, err_text)
+        else:
+            _send_telegram_message(chat_id, err_text)
 
 
 @app.get("/health")
