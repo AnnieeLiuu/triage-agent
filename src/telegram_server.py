@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from src.harness import GeminiClient, TriageHarness
 from src.mcp_client import MCPStdioClient
@@ -51,7 +52,14 @@ def _send_telegram_message(chat_id: int, text: str) -> None:
 
 
 def _run_triage_and_reply(chat_id: int, text: str) -> None:
-    if text.strip() == "/clear":
+    stripped = text.strip()
+    if stripped == "/start":
+        _send_telegram_message(
+            chat_id,
+            "你好！我是 PickForMe Ops Agent。\n請直接傳訊息問我排查問題（例如：「剛剛的燒肉怎麼沒金額？」），或輸入 /clear 清除對話記憶。",
+        )
+        return
+    if stripped == "/clear":
         _chat_histories.pop(chat_id, None)
         _send_telegram_message(chat_id, "已清除本次排查對話記憶。")
         return
@@ -85,7 +93,6 @@ def health() -> dict[str, str]:
 @app.post("/webhook")
 async def telegram_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     expected_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
@@ -106,5 +113,6 @@ async def telegram_webhook(
     if not chat_id or not text:
         return {"ok": True, "ignored": "empty_text"}
 
-    background_tasks.add_task(_run_triage_and_reply, int(chat_id), text)
-    return {"ok": True, "queued": True}
+    # Run synchronously before returning 200 OK so Cloud Run request-based CPU is not throttled.
+    await asyncio.to_thread(_run_triage_and_reply, int(chat_id), text)
+    return {"ok": True, "handled": True}

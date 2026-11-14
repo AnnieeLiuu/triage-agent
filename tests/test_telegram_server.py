@@ -52,5 +52,5 @@ def test_webhook_queues_authorized_user(monkeypatch):
         headers={"X-Telegram-Bot-Api-Secret-Token": "top-secret"},
     )
     assert resp.status_code == 200
-    assert resp.json()["queued"] is True
+    assert resp.json()["handled"] is True
     assert called == [(999, "剛剛的燒肉怎麼沒金額")]
