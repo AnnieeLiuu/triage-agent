@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import threading
 from typing import Any
@@ -24,10 +25,13 @@ class MCPStdioClient:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        resolved_env = dict(os.environ)
+        if env is not None:
+            resolved_env.update(env)
         self._server_params = StdioServerParameters(
             command=command or sys.executable,
             args=args if args is not None else ["-m", "src.mcp_server.ops_server"],
-            env=env,
+            env=resolved_env,
             cwd=cwd,
         )
         self._loop: asyncio.AbstractEventLoop | None = None

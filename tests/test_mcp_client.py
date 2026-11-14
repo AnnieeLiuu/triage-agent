@@ -101,3 +101,10 @@ def test_harness_runs_real_mcp_stdio_tools_with_hitl_gate(tmp_path: Path):
         approved_res = approved_harness.run("存檔")
         assert approved_res.stopped_reason == "completed"
         assert (tmp_path / "mcp-approved-case.json").exists()
+
+
+def test_mcp_stdio_inherits_parent_environ(monkeypatch):
+    monkeypatch.setenv("PICKFORME_TEST_ENV_MARKER", "inherited-ok")
+    client = MCPStdioClient()
+    assert client._server_params.env is not None
+    assert client._server_params.env.get("PICKFORME_TEST_ENV_MARKER") == "inherited-ok"
