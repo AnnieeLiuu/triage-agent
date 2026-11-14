@@ -260,7 +260,9 @@ def test_gemini_build_contents_merges_parallel_tool_responses():
 def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
     assert GeminiClient._extract_retry_delay("Please retry in 29.0096s.") == 30.5096
     assert GeminiClient._extract_retry_delay("no delay info", default=12.0) == 12.0
-    assert GeminiClient._extract_retry_delay("Please retry in 99s.") == 40.0
+    assert GeminiClient._extract_retry_delay("Please retry in 50s.") == 40.0
+    assert GeminiClient._extract_retry_delay("Please retry in 99s.") is None
+    assert GeminiClient._extract_retry_delay("GenerateRequestsPerDayPerProjectPerModel") is None
 
     slept: list[float] = []
     monkeypatch.setattr("src.harness.time.sleep", lambda s: slept.append(s))

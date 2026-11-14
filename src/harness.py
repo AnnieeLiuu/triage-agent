@@ -169,7 +169,7 @@ class GeminiClient:
         return LLMResponse(text=text, tool_calls=tool_calls)
 
     def _call_with_rate_limit_retry(self, contents: list[Any], config: Any, max_retries: int = 2) -> Any:
-        """Retry on 429 RESOURCE_EXHAUSTED (e.g. 5 RPM free-tier limit) using API retryDelay."""
+        """Retry on short-window 429 RPM limits; fail fast on daily quota (RPD) or >60s delays."""
         for attempt in range(max_retries + 1):
             try:
                 return self._client.models.generate_content(model=self.model, contents=contents, config=config)
@@ -179,16 +179,24 @@ class GeminiClient:
                 if not is_rate_limit or attempt >= max_retries:
                     raise
                 delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
+                if delay is None:
+                    raise
                 logger.warning("Gemini 429 rate limit hit (attempt %d/%d); sleeping %.1fs.", attempt + 1, max_retries, delay)
                 time.sleep(delay)
 
     @staticmethod
-    def _extract_retry_delay(err_str: str, default: float = 20.0) -> float:
+    def _extract_retry_delay(err_str: str, default: float = 20.0) -> float | None:
+        if "PerDay" in err_str or "RPD" in err_str:
+            return None
         match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
         if not match:
             match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", err_str)
-        seconds = float(match.group(1)) + 1.5 if match else default
-        return min(max(seconds, 5.0), 40.0)
+        if match:
+            raw_seconds = float(match.group(1))
+            if raw_seconds > 60.0:
+                return None
+            return min(max(raw_seconds + 1.5, 5.0), 40.0)
+        return min(max(default, 5.0), 40.0)
 
     @staticmethod
     def _build_contents(messages: list[dict[str, Any]]) -> list[Any]:
@@ -273,7 +281,8 @@ class TriageHarness:
             "工作規範：\n"
             "1. 開始排查前，先根據問題類型呼叫 `load_skill(name)` 載入對應的 SOP。\n"
             "2. 僅能依據工具實際回傳的觀測結果下結論，不可猜測未驗證的資訊。\n"
-            "3. `WRITE` 權限工具（如 `save_eval_case`）需要人類確認；若被拒絕，請尊重決定並停止寫入。\n\n"
+            "3. `WRITE` 權限工具（如 `save_eval_case`）需要人類確認；若被拒絕，請尊重決定並停止寫入。\n"
+            "4. 盡量在同一個回合平行呼叫多個互相獨立的唯讀工具（例如同時載入 SOP 並查詢 traces / DB / LLM 狀態），以壓低 LLM 回合數與延遲。\n\n"
             f"可用 Skills 清單：\n{skill_index}"
         )
 
