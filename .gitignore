@@ -1,0 +1,24 @@
+# API 金鑰與敏感環境變數
+.env
+*.env.local
+
+# Python 編譯與虛擬環境
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# 測試與覆蓋率
+report.xml
+coverage.xml
+.coverage
+
+# IDE 與系統檔
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
