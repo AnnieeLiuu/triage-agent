@@ -448,12 +448,14 @@ class TriageHarness:
         max_steps: int = 8,
         confirm_fn: Callable[[str, dict[str, Any]], bool] | None = None,
         on_event: Callable[[TrajectoryEvent], None] | None = None,
+        read_only: bool = False,
     ) -> None:
         self.llm_client = llm_client
         self.skill_loader = skill_loader or SkillLoader()
         self.max_steps = max_steps
+        self.read_only = read_only
         # Fail-closed by default: WRITE tools are denied unless a confirm_fn approves.
-        self.confirm_fn = confirm_fn or (lambda _name, _args: False)
+        self.confirm_fn = (lambda _name, _args: False) if read_only else (confirm_fn or (lambda _name, _args: False))
         self.on_event = on_event
 
         self.tools: dict[str, ToolSpec] = dict(tools or {})
@@ -472,14 +474,20 @@ class TriageHarness:
     def build_system_prompt(self) -> str:
         """Build system prompt exposing only the skill index (Progressive Disclosure)."""
         skill_index = self.skill_loader.format_index_for_prompt()
+        if self.read_only:
+            write_rule = "3. 目前為唯讀排查模式，禁止呼叫 `WRITE` 工具（如 `save_eval_case`），也不要詢問是否存入 Eval 測試集。"
+            eval_tail = "（唯讀模式請勿詢問是否存入 Eval）。"
+        else:
+            write_rule = "3. `WRITE` 權限工具（如 `save_eval_case`）需要人類確認；若被拒絕，請尊重決定並停止寫入。"
+            eval_tail = "；若值得存成 Eval 案例，最後用一句話簡短詢問即可。"
         return (
             "你是 PickForMe Incident Triage Agent，負責排查系統故障與彙整可重現的 Eval 案例。\n"
             "工作規範：\n"
             "1. 開始排查前，先根據問題類型呼叫 `load_skill(name)` 載入對應的 SOP。\n"
             "2. 僅能依據工具實際回傳的觀測結果下結論，不可猜測未驗證的資訊。\n"
-            "3. `WRITE` 權限工具（如 `save_eval_case`）需要人類確認；若被拒絕，請尊重決定並停止寫入。\n"
+            f"{write_rule}\n"
             "4. 盡量在同一個回合平行呼叫多個互相獨立的唯讀工具（例如同時載入 SOP 並查詢 traces / DB / LLM 狀態），以壓低 LLM 回合數與延遲。\n"
-            "5. 回覆對象是工程師，請保持精簡直接：用短條列給出「根因」、「關鍵證據（run_id / trace_id / 欄位）」與「建議處置」，控制在 150–250 字內，避免客套話、重複敘述或假裝代表產品團隊承諾排程；若值得存成 Eval 案例，最後用一句話簡短詢問即可。\n\n"
+            f"5. 回覆對象是工程師，請保持精簡直接：用短條列給出「根因」、「關鍵證據（run_id / trace_id / 欄位）」與「建議處置」，控制在 150–250 字內，避免客套話、重複敘述或假裝代表產品團隊承諾排程{eval_tail}\n\n"
             f"可用 Skills 清單：\n{skill_index}"
         )
 

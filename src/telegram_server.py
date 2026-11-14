@@ -198,6 +198,7 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
                 # Cloud Run is stateless and read-only: fail-closed on WRITE tools.
                 confirm_fn=lambda _name, _args: False,
                 on_event=_on_event,
+                read_only=True,
             )
             result = harness.run(stripped, history=history)
         with _history_lock:

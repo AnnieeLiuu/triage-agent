@@ -413,3 +413,13 @@ def test_system_prompt_concise_operator_guidance(tmp_path: Path):
     prompt = harness.build_system_prompt()
     assert "150–250 字" in prompt
     assert "工程師" in prompt
+    assert "簡短詢問即可" in prompt
+
+    ro_harness = TriageHarness(
+        llm_client=ScriptedMockLLM([]),
+        skill_loader=SkillLoader("skills"),
+        tools=_mock_read_tools(tmp_path),
+        read_only=True,
+    )
+    ro_prompt = ro_harness.build_system_prompt()
+    assert "不要詢問是否存入 Eval 測試集" in ro_prompt
