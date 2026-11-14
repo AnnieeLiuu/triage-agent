@@ -25,8 +25,17 @@ def test_health_endpoint():
 
 
 def test_webhook_rejects_invalid_secret(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "top-secret")
     client = TestClient(telegram_server.app)
+
+    # Fail-closed when TELEGRAM_WEBHOOK_SECRET is unset
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    r_unset = client.post(
+        "/webhook",
+        json={"message": {"from": {"id": 123}, "chat": {"id": 123}, "text": "hi"}},
+    )
+    assert r_unset.status_code == 403
+
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "top-secret")
     resp = client.post(
         "/webhook",
         json={"message": {"from": {"id": 123}, "chat": {"id": 123}, "text": "hi"}},
@@ -101,7 +110,7 @@ def test_start_and_clear_commands(monkeypatch):
 def test_cloud_run_blocks_write_tool_even_if_llm_attempts_it(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TRIAGE_EVAL_CASES_DIR", str(tmp_path))
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_ID", "999")
-    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "top-secret")
     telegram_server._chat_histories.pop(999, None)
 
     api_calls: list[tuple[str, dict[str, Any]]] = []
@@ -130,7 +139,11 @@ def test_cloud_run_blocks_write_tool_even_if_llm_attempts_it(tmp_path: Path, mon
     )
 
     client = TestClient(telegram_server.app)
-    resp = client.post("/webhook", json={"message": {"from": {"id": 999}, "chat": {"id": 999}, "text": "強制存檔"}})
+    resp = client.post(
+        "/webhook",
+        json={"message": {"from": {"id": 999}, "chat": {"id": 999}, "text": "強制存檔"}},
+        headers={"X-Telegram-Bot-Api-Secret-Token": "top-secret"},
+    )
     assert resp.status_code == 200
     assert not (tmp_path / "forced-write.json").exists()
     assert any(m == "sendMessage" and "拒絕寫入" in p["text"] for m, p in api_calls)
@@ -224,6 +237,20 @@ def test_telegram_status_updates_on_model_switch(monkeypatch):
     latest_progress = edits[-2]
     assert "切換至 gemini-3.8-flash" not in latest_progress
     assert any("gemini-3.1-flash-lite" in text and "排查完成" in text for text in edits)
+
+
+def test_trim_history_aligns_to_user_boundary():
+    history = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "tool_calls": [{"name": "t1", "arguments": {}}]},
+        {"role": "tool", "name": "t1", "content": "{}"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    trimmed = telegram_server._trim_history(history, max_messages=4)
+    assert trimmed[0] == {"role": "user", "content": "q2"}
+    assert len(trimmed) == 2
 
 
 # Keep os imported for env-based MCP tests if needed

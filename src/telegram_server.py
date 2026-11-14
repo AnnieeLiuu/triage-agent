@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html
 import logging
 import os
 import re
+import threading
 from typing import Any
 
 import httpx
@@ -24,6 +26,15 @@ app = FastAPI(title="PickForMe Incident Triage Agent")
 
 _MAX_HISTORY_MESSAGES = 12
 _chat_histories: dict[int, list[dict[str, Any]]] = {}
+_history_lock = threading.Lock()
+
+
+def _trim_history(history: list[dict[str, Any]], max_messages: int = _MAX_HISTORY_MESSAGES) -> list[dict[str, Any]]:
+    """Keep recent turns within max_messages while always starting on a 'user' boundary."""
+    trimmed = history[-max_messages:] if len(history) > max_messages else list(history)
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed.pop(0)
+    return trimmed
 
 
 def _is_allowed_user(user_id: int | None) -> bool:
@@ -172,7 +183,8 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
         model_status[:] = [status_msg]
         _render_progress()
 
-    history = _chat_histories.setdefault(chat_id, [])
+    with _history_lock:
+        history = list(_chat_histories.get(chat_id, []))
     try:
         llm = GeminiClient()
         if hasattr(llm, "on_status"):
@@ -188,8 +200,8 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
                 on_event=_on_event,
             )
             result = harness.run(stripped, history=history)
-        if len(history) > _MAX_HISTORY_MESSAGES:
-            _chat_histories[chat_id] = history[-_MAX_HISTORY_MESSAGES:]
+        with _history_lock:
+            _chat_histories[chat_id] = _trim_history(history)
         if status_msg_id is not None:
             model_name = getattr(llm, "model", None)
             model_tag = f"｜{model_name}" if model_name else ""
@@ -220,7 +232,7 @@ async def telegram_webhook(
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     expected_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
-    if expected_secret and x_telegram_bot_api_secret_token != expected_secret:
+    if not expected_secret or not hmac.compare_digest(x_telegram_bot_api_secret_token or "", expected_secret):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     payload = await request.json()

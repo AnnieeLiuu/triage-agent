@@ -131,6 +131,7 @@ class GeminiClient:
         raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash,gemini-3.1-flash-lite")
         self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
         self._use_groq_fallback = False
+        self._exhausted_models: set[str] = set()
         self.on_status = on_status
 
     def _notify_status(self, message: str) -> None:
@@ -214,8 +215,10 @@ class GeminiClient:
         return LLMResponse(text=text, tool_calls=tool_calls)
 
     def _call_with_rate_limit_retry(self, contents: list[Any], config: Any, max_retries: int = 2) -> Any:
-        """Retry short-window 429 RPM; switch immediately to fallback models on RPD (>60s/PerDay)."""
-        candidates = [self.model, *getattr(self, "fallback_models", [])]
+        """Retry short-window 429 RPM; switch immediately to fallback models on RPD/404/503/504."""
+        exhausted = getattr(self, "_exhausted_models", set())
+        raw_candidates = [self.model, *getattr(self, "fallback_models", [])]
+        candidates = [m for m in dict.fromkeys(raw_candidates) if m not in exhausted] or [self.model]
         last_exc: Exception | None = None
         for idx, candidate_model in enumerate(candidates):
             has_fallback = idx < len(candidates) - 1
@@ -234,6 +237,7 @@ class GeminiClient:
                     )
                     if is_unavailable:
                         logger.warning("Gemini model %s unavailable (%s); trying next fallback.", candidate_model, err_str[:80])
+                        exhausted.add(candidate_model)
                         if has_fallback:
                             next_model = candidates[idx + 1]
                             self._notify_status(
@@ -246,6 +250,7 @@ class GeminiClient:
                     delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
                     if delay is None:
                         logger.warning("Gemini daily quota (RPD) hit on %s; switching fallback.", candidate_model)
+                        exhausted.add(candidate_model)
                         if has_fallback:
                             next_model = candidates[idx + 1]
                             self._notify_status(f"🔄 {candidate_model} 額度已滿 (429)，切換至 {next_model}")
@@ -341,6 +346,8 @@ class GeminiClient:
 
         raw_models = os.getenv("GROQ_FALLBACK_MODELS", "llama-3.3-70b-versatile,openai/gpt-oss-120b")
         groq_models = [m.strip() for m in raw_models.split(",") if m.strip()]
+        if not groq_models:
+            raise RuntimeError("GROQ_FALLBACK_MODELS is empty; no Groq fallback models configured.")
         payload_base = self._build_openai_payload(system_prompt, messages, tools)
 
         last_error: Exception | None = None

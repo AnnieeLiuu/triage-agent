@@ -320,6 +320,11 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
     assert "gemini-3.8-flash" in statuses[1]
     assert "gemini-3.1-flash-lite" in statuses[2]
 
+    # Second call should NOT retry previously exhausted models
+    models_called.clear()
+    assert fb_client._call_with_rate_limit_retry([], None) == "fallback-ok"
+    assert models_called == ["gemini-3.1-flash-lite"]
+
 
 def test_gemini_cross_provider_groq_fallback(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "fake-groq-key")
@@ -370,3 +375,30 @@ def test_gemini_cross_provider_groq_fallback(monkeypatch):
     assert posted[0]["model"] == "llama-3.3-70b-versatile"
     assert len(res.tool_calls) == 1
     assert res.tool_calls[0].name == "check_neon_health"
+
+    # Turn 2: verify role="tool" message is mapped with matching tool_call_id
+    posted.clear()
+    monkeypatch.setattr(
+        "httpx.post",
+        lambda url, headers, json, timeout: posted.append(json)
+        or type(
+            "_TextResp",
+            (),
+            {
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {"choices": [{"message": {"content": "DB 正常"}}]},
+            },
+        )(),
+    )
+    res2 = client.generate(
+        "sys",
+        [
+            {"role": "user", "content": "查 DB"},
+            {"role": "assistant", "tool_calls": [{"name": "check_neon_health", "arguments": {}}]},
+            {"role": "tool", "name": "check_neon_health", "content": '{"ok": true}'},
+        ],
+        [tool],
+    )
+    assert res2.text == "DB 正常"
+    assert posted[0]["messages"][-1]["role"] == "tool"
+    assert posted[0]["messages"][-1]["tool_call_id"] == "call_1"
