@@ -311,7 +311,7 @@ def check_llm_providers() -> dict[str, Any]:
         ollama_error = str(exc)
 
     return {
-        "gemini": {"configured": gemini_configured, "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")},
+        "gemini": {"configured": gemini_configured, "model": os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")},
         "groq": {"configured": groq_configured},
         "ollama": {"base_url": ollama_url, "reachable": ollama_reachable, "error": ollama_error},
     }
