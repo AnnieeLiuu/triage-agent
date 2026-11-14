@@ -25,6 +25,7 @@ TOOL_PERMISSIONS: dict[str, str] = {
     "fetch_failed_traces": "READ",
     "get_trace_spans": "READ",
     "check_neon_health": "READ",
+    "get_recent_agent_runs": "READ",
     "check_llm_providers": "READ",
     "save_eval_case": "WRITE",
 }
@@ -126,7 +127,7 @@ def get_trace_spans(trace_id: str, days: int = 7) -> dict[str, Any]:
     try:
         observations = _fetch_observations(
             {
-                "fields": "core,basic,io",
+                "fields": "core,basic,io,metadata,usage",
                 "traceId": trace_id,
                 "fromStartTime": from_iso,
                 "toStartTime": to_iso,
@@ -136,16 +137,26 @@ def get_trace_spans(trace_id: str, days: int = 7) -> dict[str, Any]:
     except Exception as exc:
         return {"trace_id": trace_id, "error": f"Failed to fetch trace spans: {exc}"}
 
+    observations.sort(key=lambda obs: str(obs.get("startTime") or ""))
     spans = [
         {
             "id": obs.get("id"),
+            "parent_observation_id": obs.get("parentObservationId"),
             "name": obs.get("name"),
             "type": obs.get("type"),
             "level": obs.get("level"),
             "status_message": obs.get("statusMessage"),
-            "latency_ms": obs.get("latency"),
+            "latency": obs.get("latency"),
             "start_time": obs.get("startTime"),
             "end_time": obs.get("endTime"),
+            "input": obs.get("input"),
+            "output": obs.get("output"),
+            "usage": {
+                "input": obs.get("inputUsage"),
+                "output": obs.get("outputUsage"),
+                "total": obs.get("totalUsage"),
+                "details": obs.get("usageDetails"),
+            },
         }
         for obs in observations
     ]
@@ -177,6 +188,92 @@ def check_neon_health() -> dict[str, Any]:
     except Exception as exc:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {"ok": False, "latency_ms": latency_ms, "ssl_configured": ssl_configured, "error": str(exc)}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def get_recent_agent_runs(limit: int = 5, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Query recent PickForMe agent_runs and their agent_steps from Neon Postgres (read-only)."""
+    dsn = os.getenv("DATABASE_URL", "").strip()
+    if not dsn:
+        return [{"error": "DATABASE_URL is not configured."}]
+
+    safe_limit = max(1, min(limit, 20))
+    try:
+        import psycopg
+
+        with psycopg.connect(dsn, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                if run_id:
+                    cur.execute(
+                        """
+                        SELECT run_id, chat_id, user_query, model_used, total_tokens, latency_ms, status, created_at
+                        FROM agent_runs
+                        WHERE run_id = %s
+                        """,
+                        (run_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT run_id, chat_id, user_query, model_used, total_tokens, latency_ms, status, created_at
+                        FROM agent_runs
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (safe_limit,),
+                    )
+                run_rows = cur.fetchall()
+                if not run_rows:
+                    return []
+
+                run_ids = [row[0] for row in run_rows]
+                cur.execute(
+                    """
+                    SELECT run_id, step_number, action_type, tool_name, tool_input, tool_output,
+                           latency_ms, error_message, created_at
+                    FROM agent_steps
+                    WHERE run_id = ANY(%s)
+                    ORDER BY step_number ASC, created_at ASC
+                    """,
+                    (run_ids,),
+                )
+                step_rows = cur.fetchall()
+    except Exception as exc:
+        return [{"error": f"Failed to query agent_runs: {exc}"}]
+
+    steps_by_run: dict[str, list[dict[str, Any]]] = {}
+    for s_row in step_rows:
+        rid = str(s_row[0])
+        steps_by_run.setdefault(rid, []).append(
+            {
+                "step_number": s_row[1],
+                "action_type": s_row[2],
+                "tool_name": s_row[3],
+                "tool_input": s_row[4],
+                "tool_output": s_row[5],
+                "latency_ms": s_row[6],
+                "error_message": s_row[7],
+                "created_at": s_row[8].isoformat() if s_row[8] else None,
+            }
+        )
+
+    results: list[dict[str, Any]] = []
+    for r_row in run_rows:
+        rid = str(r_row[0])
+        results.append(
+            {
+                "run_id": rid,
+                "chat_id": r_row[1],
+                "user_query": r_row[2],
+                "model_used": r_row[3],
+                "total_tokens": r_row[4],
+                "latency_ms": r_row[5],
+                "status": r_row[6],
+                "created_at": r_row[7].isoformat() if r_row[7] else None,
+                "steps": steps_by_run.get(rid, []),
+            }
+        )
+    return results
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))

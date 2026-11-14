@@ -9,6 +9,7 @@ from src.mcp_server.ops_server import (
     check_llm_providers,
     check_neon_health,
     fetch_failed_traces,
+    get_recent_agent_runs,
     get_trace_spans,
     save_eval_case,
 )
@@ -18,6 +19,7 @@ def test_tool_permissions_classification():
     assert TOOL_PERMISSIONS["fetch_failed_traces"] == "READ"
     assert TOOL_PERMISSIONS["get_trace_spans"] == "READ"
     assert TOOL_PERMISSIONS["check_neon_health"] == "READ"
+    assert TOOL_PERMISSIONS["get_recent_agent_runs"] == "READ"
     assert TOOL_PERMISSIONS["check_llm_providers"] == "READ"
     assert TOOL_PERMISSIONS["save_eval_case"] == "WRITE"
 
@@ -39,6 +41,10 @@ def test_check_neon_health_missing_database_url(monkeypatch: pytest.MonkeyPatch)
     res = check_neon_health()
     assert res["ok"] is False
     assert "DATABASE_URL" in res["error"]
+
+    runs = get_recent_agent_runs()
+    assert len(runs) == 1
+    assert "DATABASE_URL" in runs[0]["error"]
 
 
 def test_check_llm_providers_never_leaks_keys(monkeypatch: pytest.MonkeyPatch):

@@ -26,12 +26,14 @@ def test_mcp_stdio_list_tools_and_permissions():
         "fetch_failed_traces",
         "get_trace_spans",
         "check_neon_health",
+        "get_recent_agent_runs",
         "check_llm_providers",
         "save_eval_case",
     }
     assert specs["fetch_failed_traces"].permission == ToolPermission.READ
     assert specs["get_trace_spans"].permission == ToolPermission.READ
     assert specs["check_neon_health"].permission == ToolPermission.READ
+    assert specs["get_recent_agent_runs"].permission == ToolPermission.READ
     assert specs["check_llm_providers"].permission == ToolPermission.READ
     assert specs["save_eval_case"].permission == ToolPermission.WRITE
 
