@@ -122,6 +122,8 @@ class GeminiClient:
             http_options=types.HttpOptions(timeout=timeout_ms, api_version="v1beta"),
         )
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+        raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
+        self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
 
     def generate(
         self,
@@ -169,20 +171,42 @@ class GeminiClient:
         return LLMResponse(text=text, tool_calls=tool_calls)
 
     def _call_with_rate_limit_retry(self, contents: list[Any], config: Any, max_retries: int = 2) -> Any:
-        """Retry on short-window 429 RPM limits; fail fast on daily quota (RPD) or >60s delays."""
-        for attempt in range(max_retries + 1):
-            try:
-                return self._client.models.generate_content(model=self.model, contents=contents, config=config)
-            except Exception as exc:
-                err_str = str(exc)
-                is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
-                if not is_rate_limit or attempt >= max_retries:
-                    raise
-                delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
-                if delay is None:
-                    raise
-                logger.warning("Gemini 429 rate limit hit (attempt %d/%d); sleeping %.1fs.", attempt + 1, max_retries, delay)
-                time.sleep(delay)
+        """Retry short-window 429 RPM; switch immediately to fallback models on RPD (>60s/PerDay)."""
+        candidates = [self.model, *getattr(self, "fallback_models", [])]
+        last_exc: Exception | None = None
+        for idx, candidate_model in enumerate(candidates):
+            has_fallback = idx < len(candidates) - 1
+            for attempt in range(max_retries + 1):
+                try:
+                    resp = self._client.models.generate_content(model=candidate_model, contents=contents, config=config)
+                    if candidate_model != self.model:
+                        logger.warning("Switched Gemini model from %s to fallback %s.", self.model, candidate_model)
+                        self.model = candidate_model
+                    return resp
+                except Exception as exc:
+                    last_exc = exc
+                    err_str = str(exc)
+                    is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                    if not is_rate_limit:
+                        raise
+                    delay = self._extract_retry_delay(err_str, default=20.0 * (attempt + 1))
+                    if delay is None:
+                        logger.warning("Gemini daily quota (RPD) hit on %s; switching fallback.", candidate_model)
+                        break
+                    if attempt >= max_retries:
+                        if has_fallback:
+                            logger.warning("Retries exhausted on %s; trying fallback.", candidate_model)
+                        break
+                    logger.warning(
+                        "Gemini 429 RPM hit on %s (attempt %d/%d); sleeping %.1fs.",
+                        candidate_model,
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                    )
+                    time.sleep(delay)
+        assert last_exc is not None
+        raise last_exc
 
     @staticmethod
     def _extract_retry_delay(err_str: str, default: float = 20.0) -> float | None:

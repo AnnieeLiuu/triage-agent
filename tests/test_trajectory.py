@@ -283,3 +283,24 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
     assert client._call_with_rate_limit_retry([], None) == "ok-resp"
     assert attempts["n"] == 2
     assert slept == [9.0]
+
+    # Verify RPD (PerDay) switches immediately to fallback model without sleeping
+    models_called: list[str] = []
+
+    class _FakeFallbackModels:
+        def generate_content(self, **kwargs):
+            models_called.append(kwargs["model"])
+            if kwargs["model"] == "gemini-3-flash-preview":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")
+            return "fallback-ok"
+
+    slept.clear()
+    fb_client = object.__new__(GeminiClient)
+    fb_client.model = "gemini-3-flash-preview"
+    fb_client.fallback_models = ["gemini-2.5-flash"]
+    fb_client._client = type("_FakeInner", (), {"models": _FakeFallbackModels()})()
+
+    assert fb_client._call_with_rate_limit_retry([], None) == "fallback-ok"
+    assert models_called == ["gemini-3-flash-preview", "gemini-2.5-flash"]
+    assert fb_client.model == "gemini-2.5-flash"
+    assert slept == []
