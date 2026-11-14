@@ -122,7 +122,10 @@ class GeminiClient:
             http_options=types.HttpOptions(timeout=timeout_ms, api_version="v1beta"),
         )
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-        raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
+        raw_fallbacks = os.getenv(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.8-flash,gemini-3.1-flash-lite,gemini-2.5-flash-lite",
+        )
         self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
         self._use_groq_fallback = False
 
@@ -154,9 +157,9 @@ class GeminiClient:
             resp = self._call_with_rate_limit_retry(contents, config)
         except Exception as exc:
             err_str = str(exc)
-            is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
-            if is_rate_limit and os.getenv("GROQ_API_KEY", "").strip():
-                logger.warning("All Gemini models exhausted (%s); falling back to Groq.", err_str[:120])
+            is_fallback_err = any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND"))
+            if is_fallback_err and os.getenv("GROQ_API_KEY", "").strip():
+                logger.warning("All Gemini models failed (%s); falling back to Groq.", err_str[:120])
                 self._use_groq_fallback = True
                 return self._call_groq_fallback(system_prompt, messages, tools)
             raise
@@ -199,6 +202,10 @@ class GeminiClient:
                 except Exception as exc:
                     last_exc = exc
                     err_str = str(exc)
+                    is_not_found = "404" in err_str or "NOT_FOUND" in err_str
+                    if is_not_found:
+                        logger.warning("Gemini model %s not found/retired; trying next fallback.", candidate_model)
+                        break
                     is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
                     if not is_rate_limit:
                         raise

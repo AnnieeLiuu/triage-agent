@@ -292,17 +292,19 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
             models_called.append(kwargs["model"])
             if kwargs["model"] == "gemini-3-flash-preview":
                 raise RuntimeError("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel")
+            if kwargs["model"] == "gemini-2.5-flash":
+                raise RuntimeError("404 NOT_FOUND: gemini-2.5-flash is no longer available")
             return "fallback-ok"
 
     slept.clear()
     fb_client = object.__new__(GeminiClient)
     fb_client.model = "gemini-3-flash-preview"
-    fb_client.fallback_models = ["gemini-2.5-flash"]
+    fb_client.fallback_models = ["gemini-2.5-flash", "gemini-3.8-flash"]
     fb_client._client = type("_FakeInner", (), {"models": _FakeFallbackModels()})()
 
     assert fb_client._call_with_rate_limit_retry([], None) == "fallback-ok"
-    assert models_called == ["gemini-3-flash-preview", "gemini-2.5-flash"]
-    assert fb_client.model == "gemini-2.5-flash"
+    assert models_called == ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.8-flash"]
+    assert fb_client.model == "gemini-3.8-flash"
     assert slept == []
 
 

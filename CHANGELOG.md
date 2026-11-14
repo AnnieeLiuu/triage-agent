@@ -13,6 +13,7 @@
 - **觀測工具擴充（`src/mcp_server/ops_server.py`）**：新增 Neon `get_recent_agent_runs`、Langfuse span io/usage 與 `input_preview`。
 
 ### Fixed
+- **Gemini 備用模型 `404 NOT_FOUND` 跳過與模型清單更新（`src/harness.py`）**：當備用模型回傳 `404 NOT_FOUND`（例如 `gemini-2.5-flash` 已對新用戶停用）時直接跳過至下一個備用模型（預設改為 `gemini-3.8-flash,gemini-3.1-flash-lite,gemini-2.5-flash-lite`）或 Groq，不中斷排查。
 - **Cloud Run MCP 子行程讀不到環境變數（`src/mcp_client.py`）**：`MCPStdioClient` 預設完整繼承 `os.environ`，修正 `mcp` SDK `env=None` 時過濾 `DATABASE_URL` 與 `LANGFUSE_*` 的問題。
 - **Gemini 429 限流與回合數優化（`src/harness.py`）**：短時間 RPM 限流自動依 `retryDelay` 退避重試，每日 RPD 快速切換備用模型，並在 System Prompt 引導單回合平行呼叫唯讀工具。
 - **Gemini 3 工具呼叫相容性（`src/harness.py`）**：固定 `HttpOptions(api_version="v1beta")`，保留多輪 `Part.thought_signature`，並將同回合多個 tool response 合併為單一 `user` content。
