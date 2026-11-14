@@ -155,7 +155,8 @@ class GeminiClient:
         except Exception as exc:
             err_str = str(exc)
             is_fallback_err = any(
-                k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND", "503", "UNAVAILABLE")
+                k in err_str
+                for k in ("429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED")
             )
             if is_fallback_err and os.getenv("GROQ_API_KEY", "").strip():
                 logger.warning("All Gemini models failed (%s); falling back to Groq.", err_str[:120])
@@ -201,7 +202,9 @@ class GeminiClient:
                 except Exception as exc:
                     last_exc = exc
                     err_str = str(exc)
-                    is_unavailable = any(k in err_str for k in ("404", "NOT_FOUND", "503", "UNAVAILABLE"))
+                    is_unavailable = any(
+                        k in err_str for k in ("404", "NOT_FOUND", "503", "UNAVAILABLE", "504", "DEADLINE_EXCEEDED")
+                    )
                     if is_unavailable:
                         logger.warning("Gemini model %s unavailable (%s); trying next fallback.", candidate_model, err_str[:80])
                         break

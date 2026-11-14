@@ -295,7 +295,7 @@ def test_gemini_rate_limit_retry_and_delay_parsing(monkeypatch):
             if kwargs["model"] == "gemini-2.5-flash":
                 raise RuntimeError("404 NOT_FOUND: gemini-2.5-flash is no longer available")
             if kwargs["model"] == "gemini-3.8-flash":
-                raise RuntimeError("503 UNAVAILABLE: experiencing high demand")
+                raise RuntimeError("504 DEADLINE_EXCEEDED: Deadline expired")
             return "fallback-ok"
 
     slept.clear()
