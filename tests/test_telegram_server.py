@@ -1,5 +1,7 @@
 """Offline tests for the FastAPI Telegram Webhook server (including adversarial & edge cases)."""
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -251,6 +253,30 @@ def test_trim_history_aligns_to_user_boundary():
     trimmed = telegram_server._trim_history(history, max_messages=4)
     assert trimmed[0] == {"role": "user", "content": "q2"}
     assert len(trimmed) == 2
+
+
+def test_triage_reply_is_logged_as_structured_json(monkeypatch, caplog):
+    telegram_server._chat_histories.pop(999, None)
+    monkeypatch.setattr(
+        telegram_server,
+        "_telegram_api",
+        lambda m, p: {"result": {"message_id": 66}},
+    )
+    monkeypatch.setattr(
+        telegram_server,
+        "GeminiClient",
+        lambda: _ScriptedLLM([LLMResponse(text="已查出根因：WAF 阻擋。")]),
+    )
+
+    with caplog.at_level(logging.INFO, logger=telegram_server.logger.name):
+        telegram_server._run_triage_and_reply(999, "剛剛為什麼沒預算")
+
+    reply_logs = [rec.getMessage() for rec in caplog.records if rec.getMessage().startswith("triage_reply ")]
+    assert len(reply_logs) == 1
+    payload = json.loads(reply_logs[0].removeprefix("triage_reply "))
+    assert payload["chat_id"] == 999
+    assert payload["query"] == "剛剛為什麼沒預算"
+    assert payload["answer"] == "已查出根因：WAF 阻擋。"
 
 
 # Keep os imported for env-based MCP tests if needed

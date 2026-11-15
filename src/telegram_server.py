@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import html
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ from src.skills_loader import SkillLoader
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 app = FastAPI(title="PickForMe Incident Triage Agent")
 
@@ -203,8 +205,22 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
             result = harness.run(stripped, history=history)
         with _history_lock:
             _chat_histories[chat_id] = _trim_history(history)
+        model_name = getattr(llm, "model", None)
+        logger.info(
+            "triage_reply %s",
+            json.dumps(
+                {
+                    "chat_id": chat_id,
+                    "query": stripped[:200],
+                    "model": model_name,
+                    "steps": result.steps_used,
+                    "progress": progress_lines,
+                    "answer": result.answer,
+                },
+                ensure_ascii=False,
+            ),
+        )
         if status_msg_id is not None:
-            model_name = getattr(llm, "model", None)
             model_tag = f"｜{model_name}" if model_name else ""
             summary_header = f"✅ 排查完成（共 {result.steps_used} 步{model_tag}）"
             if progress_lines:
