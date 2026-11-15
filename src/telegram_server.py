@@ -21,6 +21,8 @@ from src.mcp_client import MCPStdioClient
 from src.skills_loader import SkillLoader
 
 load_dotenv()
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 

@@ -271,6 +271,7 @@ def test_triage_reply_is_logged_as_structured_json(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger=telegram_server.logger.name):
         telegram_server._run_triage_and_reply(999, "剛剛為什麼沒預算")
 
+    assert telegram_server.logger.level == logging.INFO
     reply_logs = [rec.getMessage() for rec in caplog.records if rec.getMessage().startswith("triage_reply ")]
     assert len(reply_logs) == 1
     payload = json.loads(reply_logs[0].removeprefix("triage_reply "))

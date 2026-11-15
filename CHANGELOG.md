@@ -5,7 +5,7 @@
 ## [Unreleased]
 
 ### Added
-- **結構化 `triage_reply` Log（`src/telegram_server.py`）**：每次 Telegram 排查完成後以 `INFO` 記錄 `chat_id`、`query`、`model`、`steps`、`progress` 與 `answer`，方便直接透過 Cloud Run Log 檢視機器人實際回覆內容。
+- **結構化 `triage_reply` Log（`src/telegram_server.py`）**：確保 Cloud Run 容器啟動時初始化 root `StreamHandler`（`logging.basicConfig(level=logging.INFO)`），每次 Telegram 排查完成後以 `INFO` 記錄 `chat_id`、`query`、`model`、`steps`、`progress` 與 `answer`。
 - **精簡工程師導向回覆格式與唯讀模式開關（`src/harness.py`、`src/telegram_server.py`）**：對工程師輸出精簡條列（根因、證據、建議處置，控制在 150–250 字內），並在 Telegram 唯讀模式（`read_only=True`）自動省略「是否存入 Eval」的無效詢問（僅保留於本機 CLI）。
 - **Telegram 模型切換即時進度提示（`src/harness.py`、`src/telegram_server.py`）**：切換備用模型（或切至 Groq / 等待 429）時，透過 `on_status` **原地更新同一行**切換狀態（不洗版、也不會在過程中顯示 `❌`），並在完成標題顯示最終使用模型。
 - **Groq 跨 Provider 備援（`src/harness.py`）**：當所有 Gemini 模型額度耗盡（429）且已設定 `GROQ_API_KEY` 時，自動切換至 Groq（預設 `llama-3.3-70b-versatile`、`openai/gpt-oss-120b`）。
