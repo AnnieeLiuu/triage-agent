@@ -14,6 +14,12 @@
      1. `python -m ruff check src tests cli.py`
      2. `python -m pytest -q`
      3. **變更防呆檢查**：若 `origin/main..HEAD` 改動了 `src/` 或 `cli.py`，但未同步更新 `tests/` 下的測試檔案 **或** 未更新任何 `*.md` 文件，hook 會直接阻擋 `git push`（僅在純緊急狀況且經人類同意時才可使用 `--no-verify`）。
+4. **中大型異動須先寫 Plan（`docs/superpowers/plans/YYYY-MM-DD-<topic>.md`）**
+   - **必須先寫 Plan 並確認後再實作**：
+     - 新增或變更對外介面（MCP tools、FastAPI endpoints、CLI 參數、環境變數）。
+     - 預期修改 **3 個以上程式碼檔案**（不含 `tests/`），或調整 `harness.py` 核心流程與 System Prompt 策略。
+     - 存在多種架構方案需要取捨。
+   - **可免寫 Plan 直接實作**：單純局部 bugfix、文案／SOP 小修、單純補測試。
 
 ## 2. 關鍵架構與實作約束
 
@@ -36,7 +42,7 @@
 - **`README.md`**：架構組成、檔案清單、環境安裝與 CI/部署說明。
 - **`CHANGELOG.md`**：版本異動與重要故障修復紀錄（小修補優先更新此檔）。
 - **`skills/*.md`**：各類故障排查 SOP（按需載入）。
-- **`docs/`**：設計規格（Specs）與深度技術筆記。
+- **`docs/`**：設計規格（`superpowers/specs/`）、實作計畫（`superpowers/plans/`）與深度技術筆記。
 
 ## 4. 常用指令與自動部署
 

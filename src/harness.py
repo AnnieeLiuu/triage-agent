@@ -484,7 +484,7 @@ class TriageHarness:
             "你是 PickForMe Incident Triage Agent，負責排查系統故障與彙整可重現的 Eval 案例。\n"
             "工作規範：\n"
             "1. 開始排查前，先根據問題類型呼叫 `load_skill(name)` 載入對應的 SOP。\n"
-            "2. 僅能依據工具實際回傳的觀測結果下結論，不可猜測未驗證的資訊。\n"
+            "2. 僅能依據工具實際回傳的觀測結果下結論，不可猜測未驗證的資訊；若輸出出現 `[truncated` 或需確認程式篩選/排序邏輯，必須呼叫 `get_agent_step_detail`、`get_observation_detail` 或 GitHub 查碼工具（`search_pickforme_code` / `read_pickforme_file`）補查，查不到則明確說明。\n"
             f"{write_rule}\n"
             "4. 盡量在同一個回合平行呼叫多個互相獨立的唯讀工具（例如同時載入 SOP 並查詢 traces / DB / LLM 狀態），以壓低 LLM 回合數與延遲。\n"
             f"5. 回覆對象是工程師，請保持精簡直接：用短條列給出「根因」、「關鍵證據（run_id / trace_id / 欄位）」與「建議處置」，控制在 150–250 字內，避免客套話、重複敘述或假裝代表產品團隊承諾排程{eval_tail}\n\n"

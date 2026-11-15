@@ -26,16 +26,26 @@ def test_mcp_stdio_list_tools_and_permissions():
     assert set(specs.keys()) == {
         "fetch_failed_traces",
         "get_trace_spans",
+        "get_observation_detail",
         "check_neon_health",
         "get_recent_agent_runs",
+        "get_agent_step_detail",
         "check_llm_providers",
+        "list_pickforme_files",
+        "search_pickforme_code",
+        "read_pickforme_file",
         "save_eval_case",
     }
     assert specs["fetch_failed_traces"].permission == ToolPermission.READ
     assert specs["get_trace_spans"].permission == ToolPermission.READ
+    assert specs["get_observation_detail"].permission == ToolPermission.READ
     assert specs["check_neon_health"].permission == ToolPermission.READ
     assert specs["get_recent_agent_runs"].permission == ToolPermission.READ
+    assert specs["get_agent_step_detail"].permission == ToolPermission.READ
     assert specs["check_llm_providers"].permission == ToolPermission.READ
+    assert specs["list_pickforme_files"].permission == ToolPermission.READ
+    assert specs["search_pickforme_code"].permission == ToolPermission.READ
+    assert specs["read_pickforme_file"].permission == ToolPermission.READ
     assert specs["save_eval_case"].permission == ToolPermission.WRITE
     assert "cases_dir" not in specs["save_eval_case"].parameters.get("properties", {})
 

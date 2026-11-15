@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### Added
+- **結構化精簡、按需細節查詢與 PickForMe 唯讀查碼工具（`src/mcp_server/ops_server.py`、`src/harness.py`、`skills/triage-langfuse-trace.md`）**：
+  - `get_recent_agent_runs` 與 `get_trace_spans` 改用通用 `_compact_io()` 遞迴精簡長字串/長陣列並完整保留短欄位（如所有店名與價格）；`get_recent_agent_runs` 新增 `query` 與 `chat_id` 篩選。
+  - 新增 `get_agent_step_detail` 與 `get_observation_detail`（支援 `offset` / `max_chars` 分段讀取完整 `input` / `output`）。
+  - 新增唯讀 GitHub 工具 `search_pickforme_code` 與 `read_pickforme_file`（預設讀取 `AnnieeLiuu/pickforme` `main`，支援選填 `GITHUB_TOKEN`）。
+  - 在 `AGENTS.md` 新增中大型異動先寫 Plan 之規範，並強化 System Prompt 與 SOP 的防腦補紀律。
 - **結構化 `triage_reply` Log（`src/telegram_server.py`）**：確保 Cloud Run 容器啟動時初始化 root `StreamHandler`（`logging.basicConfig(level=logging.INFO)`），每次 Telegram 排查完成後以 `INFO` 記錄 `chat_id`、`query`、`model`、`steps`、`progress` 與 `answer`。
 - **精簡工程師導向回覆格式與唯讀模式開關（`src/harness.py`、`src/telegram_server.py`）**：對工程師輸出精簡條列（根因、證據、建議處置，控制在 150–250 字內），並在 Telegram 唯讀模式（`read_only=True`）自動省略「是否存入 Eval」的無效詢問（僅保留於本機 CLI）。
 - **Telegram 模型切換即時進度提示（`src/harness.py`、`src/telegram_server.py`）**：切換備用模型（或切至 Groq / 等待 429）時，透過 `on_status` **原地更新同一行**切換狀態（不洗版、也不會在過程中顯示 `❌`），並在完成標題顯示最終使用模型。

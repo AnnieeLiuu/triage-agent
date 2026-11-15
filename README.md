@@ -5,7 +5,7 @@
 ## 架構組成
 
 - **`src/harness.py`**：手刻極簡 Agent Harness（ReAct 迴圈、`max_steps` 步數熔斷、`READ` / `WRITE` 權限閘門、Human-in-the-loop 確認、`TrajectoryRecorder`、`GeminiClient` `v1beta` + `thought_signature` 保留 + 429 RPM 重試 / RPD 切換備用模型鏈 + 選用 `GROQ_API_KEY` 跨 Provider 備援、平行唯讀工具呼叫引導）。
-- **`src/mcp_server/ops_server.py`**：標準 **FastMCP Server**（stdio transport），提供 `fetch_failed_traces`、`get_trace_spans`、`check_neon_health`、`get_recent_agent_runs`、`check_llm_providers`、`save_eval_case`。
+- **`src/mcp_server/ops_server.py`**：標準 **FastMCP Server**（stdio transport），提供 `fetch_failed_traces`、`get_trace_spans`、`get_observation_detail`、`check_neon_health`、`get_recent_agent_runs`（支援 `query`/`chat_id` 與 `_compact_io` 結構化精簡）、`get_agent_step_detail`、`check_llm_providers`、`list_pickforme_files`、`search_pickforme_code`、`read_pickforme_file`、`save_eval_case`。
 - **`src/mcp_client.py`**：`MCPStdioClient`，負責以 stdio 啟動 `ops_server` 並**完整繼承父行程 `os.environ`**（確保 Cloud Run 無 `.env` 時仍可讀取連線變數）。
 - **`src/telegram_server.py`**：GCP Cloud Run FastAPI Webhook 服務（`/health`、`/webhook`），支援 Secret Token 與白名單驗證、`/start` 與 `/clear` 多輪對話管理、即時進度編輯、Markdown 轉 Telegram HTML（含純文字降級保護），且強制 `WRITE` 工具 fail-closed。
 - **`src/skills_loader.py` & `skills/*.md`**：Progressive Skill 載入器與排查 SOP（`triage-langfuse-trace`、`triage-db-neon`、`triage-eval-capture`）。

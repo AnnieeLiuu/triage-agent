@@ -9,12 +9,11 @@ description: 排查 PickForMe 最近請求經過、輸出異常、缺資料（�
 - 使用者問「剛剛發生了什麼事情」、「為什麼輸出怪怪的 / 被截斷」、「為什麼某間店沒有預算/金額」或「Langfuse 出現失敗 / 低分 Trace」。
 
 ## 排查步驟
-1. **優先調閱 Neon 完整執行步驟**：呼叫 `get_recent_agent_runs(limit=3)`，從 `agent_runs` 與 `agent_steps` 取得最近請求的 `user_query`、`model_used`、`total_tokens`、`latency_ms`、`status` 與 Stage 1–4 每一步的 `tool_input` / `tool_output` / `error_message`：
-   - **Stage 1 (`state_1_intent`)**：檢查意圖、地點、料理類型是否解析正確。
-   - **Stage 2 (`state_2_places`)**：檢查 Google Places 搜尋結果數量與座標。
-   - **Stage 3 (`state_3_tabelog`)**：檢查 `aligned_stores` 各欄位；若 `price_lunch` / `price_dinner` 為 `null` 且 `sample_reviews` 只有搜尋摘要，通常是 Tabelog 詳情頁被 403 WAF 阻擋後走摘要備援所致。
-   - **Stage 4 (`state_4_synthesis`)**：檢查 `card_content` 與 `length`；若輸出異常過短（例如 `< 100` 字或句子斷在一半），檢查 `model_used`（如 `openai/gpt-oss-120b` 容易把 `max_tokens` 耗在 reasoning tokens 導致截斷）。
-2. **交叉追查 Langfuse**：呼叫 `fetch_failed_traces(limit=10)`（或帶 `only_errors=True` 查錯誤），再針對相關 `trace_id` 呼叫 `get_trace_spans(trace_id)` 檢視 `input`、`output`、`usage` 與 `status_message`。
-3. **補充健康檢查（視需要）**：懷疑 DB 異常載入 `triage-db-neon`；懷疑模型額度或熱切換異常呼叫 `check_llm_providers()`。
-4. **輸出具體結論**：明確指出 `run_id` / `trace_id`、使用模型、卡在哪一個 Stage、實際數值與修復建議（不可猜測未觀測到的欄位）。
-5. **詢問是否轉存 Eval**：若已確認可重現根因，詢問使用者是否載入 `triage-eval-capture` 轉存案例（雲端環境將依權限閘門禁止寫入）。
+1. **調閱 Neon 執行步驟（看全貌）**：呼叫 `get_recent_agent_runs`（必要時帶 `query`、`chat_id` 或 `run_id` 過濾），比對各 step 的 `tool_input` 與 `tool_output`（例如前後步驟清單數量或欄位變化）與 `error_message`。
+2. **按需補查細節（禁止對截斷資料腦補）**：
+   - 若某步出現 `[truncated` 且需要看評論原文或完整輸出，呼叫 `get_agent_step_detail(run_id, step_number)`（可帶 `offset` 分段）。
+   - 若要交叉比對 Langfuse，呼叫 `fetch_failed_traces` → `get_trace_spans(trace_id)`；若單一 span 出現 `[truncated`，呼叫 `get_observation_detail(observation_id)`。
+3. **驗證最新 PickForMe 程式碼邏輯**：當前後步驟數量不一致或懷疑排序、預算、品類過濾條件時，呼叫 `list_pickforme_files` / `search_pickforme_code` 與 `read_pickforme_file` 直接讀取 `AnnieeLiuu/pickforme` 最新程式實作，以實際程式碼為準。
+4. **補充健康檢查（視需要）**：懷疑 DB 異常載入 `triage-db-neon`；懷疑模型額度或熱切換異常呼叫 `check_llm_providers()`。
+5. **輸出具體結論**：明確指出 `run_id` / `trace_id`、使用模型、實際數值／程式碼位置與修復建議（未查證的細節不可推測）。
+6. **詢問是否轉存 Eval**：若已確認可重現根因，詢問使用者是否載入 `triage-eval-capture` 轉存案例（雲端環境將依權限閘門禁止寫入）。
