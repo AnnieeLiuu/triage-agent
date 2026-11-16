@@ -21,6 +21,9 @@
 - **觀測工具擴充（`src/mcp_server/ops_server.py`）**：新增 Neon `get_recent_agent_runs`、Langfuse span io/usage 與 `input_preview`。
 
 ### Fixed
+- **Telegram Webhook `update_id` 去重與移除 `504` 卡頓備用模型（`src/telegram_server.py`、`src/harness.py`）**：
+  - `/webhook` 新增 `_claim_update_id()`（上限 500 筆的執行緒安全 LRU），防止 Cloud Run 回應較久時被 Telegram 重試機制重複觸發多輪回覆。
+  - `GEMINI_FALLBACK_MODELS` 預設值由 `gemini-3.8-flash,gemini-3.1-flash-lite` 改為 `gemini-2.5-flash,gemini-3.1-flash-lite`，避免每次 429 後白等 `3.8-flash` 30 秒才 `504`。
 - **Gemini 備用模型 `404` / `503` / `504` 跳過與模型清單更新（`src/harness.py`）**：當備用模型回傳 `404 NOT_FOUND`（對新用戶停用）、`503 UNAVAILABLE`（高負載）或 `504 DEADLINE_EXCEEDED`（逾時）時直接跳過至下一個備用模型（預設 `gemini-3.8-flash,gemini-3.1-flash-lite`）或 Groq，不中斷排查。
 - **Cloud Run MCP 子行程讀不到環境變數（`src/mcp_client.py`）**：`MCPStdioClient` 預設完整繼承 `os.environ`，修正 `mcp` SDK `env=None` 時過濾 `DATABASE_URL` 與 `LANGFUSE_*` 的問題。
 - **Gemini 429 限流與回合數優化（`src/harness.py`）**：短時間 RPM 限流自動依 `retryDelay` 退避重試，每日 RPD 快速切換備用模型，並在 System Prompt 引導單回合平行呼叫唯讀工具。

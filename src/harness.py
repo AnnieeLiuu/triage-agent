@@ -128,7 +128,7 @@ class GeminiClient:
             http_options=types.HttpOptions(timeout=timeout_ms, api_version="v1beta"),
         )
         self.model = model or os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-        raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash,gemini-3.1-flash-lite")
+        raw_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-3.1-flash-lite")
         self.fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip() and m.strip() != self.model]
         self._use_groq_fallback = False
         self._exhausted_models: set[str] = set()

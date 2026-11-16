@@ -27,7 +27,7 @@
   - `mcp` Python SDK 的 `StdioServerParameters` 在 `env=None` 時會過濾掉敏感環境變數。`MCPStdioClient` 必須預設繼承 `dict(os.environ)`，否則在無 `.env` 的 Cloud Run 容器內 `ops_server` 會讀不到 `DATABASE_URL` 與 `LANGFUSE_*`。
 - **Gemini 3 相容性與 429 限流處理（`src/harness.py`）**：
   - 需使用 `HttpOptions(api_version="v1beta")`，並在多輪 tool calling 中完整保留 `Part.thought_signature`，且將同回合多個 tool response 合併為單一 `user` content。
-  - `GeminiClient._call_with_rate_limit_retry` 僅針對短時間 429 RPM（`retryDelay <= 60s`）自動退避重試；若遇到 `PerDay` / `RPD`、`retryDelay > 60s` 或 `404`/`503`/`504` 必須**快速切換備用模型**（`GEMINI_FALLBACK_MODELS`，預設 `gemini-3.8-flash,gemini-3.1-flash-lite`），或切至 Groq 跨 Provider 備援，避免無意義等待。
+  - `GeminiClient._call_with_rate_limit_retry` 僅針對短時間 429 RPM（`retryDelay <= 60s`）自動退避重試；若遇到 `PerDay` / `RPD`、`retryDelay > 60s` 或 `404`/`503`/`504` 必須**快速切換備用模型**（`GEMINI_FALLBACK_MODELS`，預設 `gemini-2.5-flash,gemini-3.1-flash-lite`），或切至 Groq 跨 Provider 備援，避免無意義等待。
   - System Prompt 引導模型在單回合平行呼叫多個唯讀工具，將排查回合壓低以減少撞限流機率。
 - **Telegram Webhook 安全與排版（`src/telegram_server.py`）**：
   - Cloud Run 端為無狀態唯讀模式：`confirm_fn` 固定為 `False`（fail-closed），不可允許寫入 `evals/cases/`。

@@ -280,5 +280,29 @@ def test_triage_reply_is_logged_as_structured_json(monkeypatch, caplog):
     assert payload["answer"] == "已查出根因：WAF 阻擋。"
 
 
+def test_webhook_deduplicates_duplicate_update_id(monkeypatch):
+    telegram_server._seen_update_ids.clear()
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_ID", "999")
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(telegram_server, "_run_triage_and_reply", lambda cid, txt: calls.append((cid, txt)))
+
+    client = TestClient(telegram_server.app)
+    body = {
+        "update_id": 778899,
+        "message": {"from": {"id": 999}, "chat": {"id": 999}, "text": "hello"},
+    }
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
+
+    r1 = client.post("/webhook", json=body, headers=headers)
+    r2 = client.post("/webhook", json=body, headers=headers)
+
+    assert r1.status_code == 200
+    assert r1.json() == {"ok": True, "handled": True}
+    assert r2.status_code == 200
+    assert r2.json() == {"ok": True, "ignored": "duplicate_update"}
+    assert calls == [(999, "hello")]
+
+
 # Keep os imported for env-based MCP tests if needed
 _ = os

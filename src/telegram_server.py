@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -29,8 +30,24 @@ logger.setLevel(logging.INFO)
 app = FastAPI(title="PickForMe Incident Triage Agent")
 
 _MAX_HISTORY_MESSAGES = 12
+_MAX_SEEN_UPDATES = 500
 _chat_histories: dict[int, list[dict[str, Any]]] = {}
 _history_lock = threading.Lock()
+_seen_update_ids: OrderedDict[int, None] = OrderedDict()
+_update_lock = threading.Lock()
+
+
+def _claim_update_id(update_id: int | None) -> bool:
+    """Return True if this Telegram update_id has not been seen yet, preventing webhook retry duplicates."""
+    if update_id is None:
+        return True
+    with _update_lock:
+        if update_id in _seen_update_ids:
+            return False
+        _seen_update_ids[update_id] = None
+        if len(_seen_update_ids) > _MAX_SEEN_UPDATES:
+            _seen_update_ids.popitem(last=False)
+        return True
 
 
 def _trim_history(history: list[dict[str, Any]], max_messages: int = _MAX_HISTORY_MESSAGES) -> list[dict[str, Any]]:
@@ -267,6 +284,11 @@ async def telegram_webhook(
     text = (message.get("text") or "").strip()
     if not chat_id or not text:
         return {"ok": True, "ignored": "empty_text"}
+
+    raw_update_id = payload.get("update_id")
+    update_id = raw_update_id if isinstance(raw_update_id, int) else None
+    if not _claim_update_id(update_id):
+        return {"ok": True, "ignored": "duplicate_update"}
 
     # Run synchronously before returning 200 OK so Cloud Run request-based CPU is not throttled.
     await asyncio.to_thread(_run_triage_and_reply, int(chat_id), text)
