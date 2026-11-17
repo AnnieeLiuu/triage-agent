@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Callable, Protocol
 
 from src.skills_loader import SkillLoader
+from src.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ class LLMResponse:
 
     text: str | None = None
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    model: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 class LLMClient(Protocol):
@@ -94,6 +97,24 @@ class TrajectoryRecorder:
     @property
     def permission_decisions(self) -> list[dict[str, Any]]:
         return [e.detail for e in self.events if e.event_type == "permission_decision"]
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(int(e.detail.get("total_tokens", 0) or 0) for e in self.events if e.event_type == "llm_turn")
+
+    @property
+    def model_usage_summary(self) -> dict[str, dict[str, int]]:
+        summary: dict[str, dict[str, int]] = {}
+        for e in self.events:
+            if e.event_type == "llm_turn":
+                m = str(e.detail.get("model") or "unknown")
+                if m not in summary:
+                    summary[m] = {"turns": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                summary[m]["turns"] += 1
+                summary[m]["prompt_tokens"] += int(e.detail.get("prompt_tokens", 0) or 0)
+                summary[m]["completion_tokens"] += int(e.detail.get("completion_tokens", 0) or 0)
+                summary[m]["total_tokens"] += int(e.detail.get("total_tokens", 0) or 0)
+        return summary
 
 
 @dataclass
@@ -212,7 +233,16 @@ class GeminiClient:
         text = None
         if not tool_calls:
             text = getattr(resp, "text", None) or ""
-        return LLMResponse(text=text, tool_calls=tool_calls)
+
+        usage: dict[str, int] = {}
+        usage_meta = getattr(resp, "usage_metadata", None)
+        if usage_meta is not None:
+            usage = {
+                "prompt_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
+                "completion_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
+                "total_tokens": getattr(usage_meta, "total_token_count", 0) or 0,
+            }
+        return LLMResponse(text=text, tool_calls=tool_calls, model=self.model, usage=usage)
 
     def _call_with_rate_limit_retry(self, contents: list[Any], config: Any, max_retries: int = 2) -> Any:
         """Retry short-window 429 RPM; switch immediately to fallback models on RPD/404/503/504."""
@@ -373,7 +403,13 @@ class GeminiClient:
                     args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                     tool_calls.append(ToolCallRequest(name=fn["name"], arguments=args))
                 text = None if tool_calls else (msg.get("content") or "")
-                return LLMResponse(text=text, tool_calls=tool_calls)
+                raw_usage = data.get("usage") or {}
+                usage = {
+                    "prompt_tokens": raw_usage.get("prompt_tokens", 0) or 0,
+                    "completion_tokens": raw_usage.get("completion_tokens", 0) or 0,
+                    "total_tokens": raw_usage.get("total_tokens", 0) or 0,
+                }
+                return LLMResponse(text=text, tool_calls=tool_calls, model=self.model, usage=usage)
             except Exception as exc:
                 last_error = exc
                 logger.warning("Groq fallback model %s failed: %s", groq_model, exc)
@@ -491,7 +527,12 @@ class TriageHarness:
             f"可用 Skills 清單：\n{skill_index}"
         )
 
-    def run(self, user_query: str, history: list[dict[str, Any]] | None = None) -> TriageResult:
+    def run(
+        self,
+        user_query: str,
+        history: list[dict[str, Any]] | None = None,
+        chat_id: int | str | None = None,
+    ) -> TriageResult:
         """Execute the ReAct loop until completion or max_steps circuit breaker."""
         recorder = TrajectoryRecorder(on_event=self.on_event)
         system_prompt = self.build_system_prompt()
@@ -499,8 +540,38 @@ class TriageHarness:
         messages.append({"role": "user", "content": user_query})
         tool_list = list(self.tools.values())
 
+        trace = telemetry.start_trace(
+            name="incident-triage",
+            session_id=str(chat_id) if chat_id is not None else None,
+            user_id=str(chat_id) if chat_id is not None else None,
+            input_data={"query": user_query, "history_len": len(messages)},
+            tags=["triage-agent"],
+        )
+
         for step in range(1, self.max_steps + 1):
+            span_step = telemetry.start_span(trace, f"step-{step}", input_data={"step": step})
             response = self.llm_client.generate(system_prompt, messages, tool_list)
+            model_used = response.model or getattr(self.llm_client, "model", "unknown")
+            usage = response.usage or {}
+
+            recorder.record(
+                step,
+                "llm_turn",
+                {
+                    "model": model_used,
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            )
+            telemetry.record_generation(
+                span_step,
+                name="llm-generate",
+                model=model_used,
+                input_data={"messages_count": len(messages)},
+                output_data={"text_len": len(response.text or ""), "tool_calls_count": len(response.tool_calls)},
+                usage=usage,
+            )
 
             if not response.tool_calls:
                 answer = response.text or ""
@@ -508,6 +579,9 @@ class TriageHarness:
                 if history is not None:
                     history[:] = messages
                 recorder.record(step, "final_answer", {"answer": answer})
+                telemetry.end_span(span_step, output_data={"final_answer": answer[:300]})
+                telemetry.end_trace(trace, output_data=answer)
+                telemetry.flush()
                 return TriageResult(
                     answer=answer,
                     stopped_reason="completed",
@@ -531,7 +605,10 @@ class TriageHarness:
             )
 
             for tc in response.tool_calls:
+                span_tool = telemetry.start_span(span_step, f"tool:{tc.name}", input_data=tc.arguments)
                 observation = self._execute_tool_call(step, tc, recorder)
+                obs_summary = str(observation)[:300] if observation is not None else ""
+                telemetry.end_span(span_tool, output_data={"result": obs_summary})
                 messages.append(
                     {
                         "role": "tool",
@@ -540,11 +617,15 @@ class TriageHarness:
                     }
                 )
 
+            telemetry.end_span(span_step)
+
         recorder.record(self.max_steps, "circuit_breaker", {"reason": "max_steps_reached"})
         answer = f"已達最大步數上限 ({self.max_steps})，觸發步數熔斷並中止排查。"
         messages.append({"role": "assistant", "content": answer})
         if history is not None:
             history[:] = messages
+        telemetry.end_trace(trace, output_data=answer)
+        telemetry.flush()
         return TriageResult(
             answer=answer,
             stopped_reason="max_steps",

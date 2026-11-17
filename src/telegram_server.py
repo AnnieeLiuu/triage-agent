@@ -221,10 +221,12 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
                 on_event=_on_event,
                 read_only=True,
             )
-            result = harness.run(stripped, history=history)
+            result = harness.run(stripped, history=history, chat_id=chat_id)
         with _history_lock:
             _chat_histories[chat_id] = _trim_history(history)
         model_name = getattr(llm, "model", None)
+        total_tokens = getattr(result.trajectory, "total_tokens", 0)
+        model_usage = getattr(result.trajectory, "model_usage_summary", {})
         logger.info(
             "triage_reply %s",
             json.dumps(
@@ -233,6 +235,8 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
                     "query": stripped[:200],
                     "model": model_name,
                     "steps": result.steps_used,
+                    "total_tokens": total_tokens,
+                    "model_usage": model_usage,
                     "progress": progress_lines,
                     "answer": result.answer,
                 },
@@ -241,7 +245,8 @@ def _run_triage_and_reply(chat_id: int, text: str) -> None:
         )
         if status_msg_id is not None:
             model_tag = f"｜{model_name}" if model_name else ""
-            summary_header = f"✅ 排查完成（共 {result.steps_used} 步{model_tag}）"
+            token_tag = f"｜🪙 {total_tokens:,} tokens" if total_tokens > 0 else ""
+            summary_header = f"✅ 排查完成（共 {result.steps_used} 步{model_tag}{token_tag}）"
             if progress_lines:
                 summary_header += "：\n" + "\n".join(progress_lines)
             _edit_telegram_message(chat_id, status_msg_id, summary_header)

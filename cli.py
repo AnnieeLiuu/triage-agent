@@ -63,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.query:
             result = harness.run(args.query)
-            print(f"\n=== 排查結論 ({result.stopped_reason}, {result.steps_used} steps) ===")
+            tokens = getattr(result.trajectory, "total_tokens", 0)
+            token_str = f", 🪙 {tokens:,} tokens" if tokens > 0 else ""
+            print(f"\n=== 排查結論 ({result.stopped_reason}, {result.steps_used} steps{token_str}) ===")
             print(result.answer)
             return 0
 
@@ -78,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
             if not query or query.lower() in {"exit", "quit"}:
                 break
             result = harness.run(query, history=history)
-            print(f"\n=== 排查結論 ({result.stopped_reason}, {result.steps_used} steps) ===")
+            tokens = getattr(result.trajectory, "total_tokens", 0)
+            token_str = f", 🪙 {tokens:,} tokens" if tokens > 0 else ""
+            print(f"\n=== 排查結論 ({result.stopped_reason}, {result.steps_used} steps{token_str}) ===")
             print(result.answer)
     return 0
 

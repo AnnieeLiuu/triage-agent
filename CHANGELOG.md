@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### Added
+- **Langfuse 追蹤與 ReAct 回合級 Token 統計（`src/telemetry.py`、`src/harness.py`、`src/telegram_server.py`、`cli.py`）**：
+  - 新增 `src/telemetry.py`（提供零網路請求的 `NoOpSpan` 防護與 `TelemetryManager`），在執行排查時記錄完整 Langfuse Trace、Step Span、Tool 子 Span 與 LLM Generation。
+  - `LLMResponse` 支援 `model` 與 `usage`（自動由 Gemini `resp.usage_metadata` 或 Groq `usage` 擷取 Prompt / Completion / Total tokens）。
+  - `TrajectoryRecorder` 新增 `total_tokens` 與 `model_usage_summary`（支援跨模型降級時分別統計個別模型的回合數與 Token 消耗）。
+  - `telegram_server.py` 與 `cli.py` 在排查完成標題顯示總消耗 Token（如 `｜🪙 1,450 tokens`），並於結構化日誌記錄 `model_usage` 完整拆解。
 - **結構化精簡、按需細節查詢與 PickForMe 唯讀查碼工具（`src/mcp_server/ops_server.py`、`src/harness.py`、`skills/triage-langfuse-trace.md`）**：
   - `get_recent_agent_runs` 與 `get_trace_spans` 改用通用 `_compact_io()` 遞迴精簡長字串/長陣列並完整保留短欄位（如所有店名與價格）；`get_recent_agent_runs` 新增 `query` 與 `chat_id` 篩選。
   - 新增 `get_agent_step_detail` 與 `get_observation_detail`（支援 `offset` / `max_chars` 分段讀取完整 `input` / `output`）。
